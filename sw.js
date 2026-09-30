@@ -3,7 +3,7 @@
    và cache ảnh thumbnail từ Drive để không tải lại. Không bao giờ cache lời gọi Apps Script.
    Đổi số phiên bản CACHE mỗi lần sửa file app để điện thoại tải bản mới.
    ===================================================================== */
-const CACHE = 'moonhouse-v1';
+const CACHE = 'moonhouse-v2';
 const SHELL = ['./', './index.html', './app.css', './app.js', './store.js', './api.js', './sync.js', './manifest.json',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'];
 
