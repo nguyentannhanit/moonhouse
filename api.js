@@ -27,7 +27,13 @@ const Api = {
     finally { clearTimeout(timer); }
     const text = await res.text();
     let json;
-    try { json = JSON.parse(text); } catch (e) { throw new Error('Máy chủ trả về không phải JSON — kiểm tra lại URL Web App'); }
+    try { json = JSON.parse(text); }
+    catch (e) {
+      // Google trả trang HTML: thường do Apps Script cần cấp quyền lại sau khi dán code mới, hoặc URL sai
+      throw new Error(/authoriz|quyền|permission/i.test(text)
+        ? 'Google chặn vì Apps Script cần cấp quyền lại: mở Sheets → menu Moon House, bấm một mục và cho phép'
+        : 'Google trả về trang web thay vì dữ liệu: kiểm tra URL Web App (phải kết thúc bằng /exec) hoặc cấp quyền lại cho Apps Script');
+    }
     if (!json.ok) throw new Error(json.error || 'Lỗi không rõ từ máy chủ');
     return json;
   }

@@ -395,3 +395,11 @@ body::before{content:"";position:fixed;inset:0;z-index:-1;background:
 .pick i{width:20px;height:20px;border-radius:50%;border:2px solid #D2AEB9;margin-top:2px;box-sizing:border-box}
 .pick.on{border:1.5px solid var(--rose)}
 .pick.on i{border:6px solid var(--rose)}
+
+/* ===== Ngày của từng váy, khách nhiều đơn (mẫu đã duyệt: mockup/gop_theo_khach.html) ===== */
+:root{--plum:#8E3B52}   /* mận: cùng màu tiêu đề trên Google Sheets; dùng cho nhãn số đơn, số lần */
+.day-tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:99px;background:rgba(126,102,112,.10);color:var(--ink2);margin-top:4px}
+.day-tag.later{background:rgba(199,96,122,.14);color:var(--plum)}
+.row .main b .multi.cust,.multi.cust{background:var(--plum);color:#fff}
+.more-moons{font-size:12px;color:var(--ink2);align-self:center;margin-left:2px}
+.vw-cap .vw-day{color:#FFC9D6;font-weight:600}

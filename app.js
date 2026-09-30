@@ -23,6 +23,9 @@ const fromIso = s => { if (!s || !/^\d{4}-\d{2}-\d{2}/.test(String(s))) return n
 const sameDay = (a, b) => !!a && !!b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 // Bỏ dấu + chữ thường để tìm kiếm
 const norm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'd').toLowerCase();
+// Khoá so trùng tên khách: chữ thường, mỗi chữ = chữ cái gốc + các dấu (xếp lại) → "thuỳ" = "thùy", "hương" ≠ "hường"
+const nameKey = s => String(s || '').toLowerCase().normalize('NFD').trim().split(/\s+/).filter(Boolean)
+  .map(w => [...w].filter(ch => !/[\u0300-\u036f]/.test(ch)).join('') + '|' + [...w].filter(ch => /[\u0300-\u036f]/.test(ch)).sort().join('')).join(' ');
 const matchText = (text, q) => { const t = norm(text); return norm(q).split(/\s+/).filter(Boolean).every(w => t.includes(w)); };
 // Mã duy nhất cho bản ghi mới, có tiền tố để nhìn vào Sheets biết là gì
 // Mã bắt đầu bằng thời điểm tạo → sắp theo mã là đúng thứ tự tạo (dùng để đánh số lần đặt cùng ngày)
@@ -36,7 +39,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.2.1';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.3';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -73,7 +76,7 @@ const imgFor = (id, anhId, w) => state.imgUrls[id] || (anhId ? thumb(anhId, w ||
 function dressFromRec(r, i) {
   const st = STATUS.indexOf(r.trangThai);
   return { id: r.id, no: +r.thuTu || i + 1, price: +r.giaTien || 0, cost: +r.giaNhap || null, size: r.size || '', source: r.kho || '',
-    note: r.ghiChuVay || '', status: st < 0 ? 0 : st, anhId: r.anhId || '', img: imgFor(r.id, r.anhId), tone: toneFor(r.id), stockId: r.hangHoaId || '', noteGoc: r.noteGoc || '' };
+    note: r.ghiChuVay || '', status: st < 0 ? 0 : st, date: fromIso(r.ngayThem), anhId: r.anhId || '', img: imgFor(r.id, r.anhId), tone: toneFor(r.id), stockId: r.hangHoaId || '', noteGoc: r.noteGoc || '' };
 }
 function stockFromRec(r) {
   return { id: r.id, price: +r.giaTien || 0, cost: +r.giaNhap || null, size: r.size || '', source: r.kho || '', note: r.ghiChu || '',
@@ -122,6 +125,15 @@ const orderById = id => state.orders.find(o => o.id === id);
 /* ---------- Đơn (nhóm lần đặt) ---------- */
 const groupById = id => state.groups.find(g => g.id === id) || state.groups.find(g => g.lans.some(o => o.id === id));
 const groupsOf = c => state.groups.filter(g => g.cid === c.id);
+// Khách có sẵn trùng tên với tên đang gõ (bỏ qua khách đang sửa)
+const sameNameCustomer = (name, exceptId) => state.customers.find(c => c.id !== exceptId && nameKey(c.name) === nameKey(name));
+// Các nhóm khách cũ đã trùng tên
+const duplicateCustomers = () => Object.values(groupBy(state.customers.map(c => Object.assign({ k: nameKey(c.name) }, c)), 'k')).filter(x => x.length > 1);
+// Khung nhắc gộp khách trùng tên (hiện ở Đơn hàng và Khách hàng khi có)
+function dupBanner() {
+  const d = duplicateCustomers(); if (!d.length) return '';
+  return `<div class="banner"><b>Có ${d.length} tên khách bị trùng</b>${d.map(x => esc(x[0].name) + ' (' + x.length + ')').join(', ')}. Gộp để mỗi khách chỉ còn một, đơn của các bản trùng chuyển về chung.<br><button data-act="merge-dups">Gộp khách trùng tên</button></div>`;
+}
 const groupDresses = g => g.lans.flatMap(o => o.dresses);
 const groupTotal = g => g.lans.reduce((s, o) => s + orderTotal(o), 0);
 const groupPaid = g => g.lans.reduce((s, o) => s + orderPaid(o), 0);
@@ -132,6 +144,10 @@ const groupOpen = g => groupDresses(g).some(d => d.status < 2);                 
 const nextDue = g => g.lans.filter(o => o.due && o.dresses.some(d => d.status < 2)).map(o => o.due).sort((a, b) => a - b)[0] || null;
 const groupDateLabel = g => !g.first ? 'Chưa có ngày' : sameDay(g.first, g.last) ? dm(g.first) : dm(g.first) + ' → ' + dm(g.last);
 const lanTag = o => o.lanCount > 1 ? ' · lần ' + o.lanNo : '';
+// Ngày của váy: ngày thêm nếu có, không thì ngày đặt của đơn; "thêm sau" khi khác ngày đặt
+const dressDay = (d, o) => d.date || o.date;
+const addedLater = (d, o) => !!(d.date && o.date && !sameDay(d.date, o.date));
+const dayTag = (d, o) => { const day = dressDay(d, o); return day ? `<span class="day-tag ${addedLater(d, o) ? 'later' : ''}">Ngày ${dm(day)}${addedLater(d, o) ? ' · thêm sau' : ''}</span>` : ''; };
 // Tiền cọc của một lần = các khoản ghi "Cọc"
 const lanDeposit = o => o.pays.filter(p => p.kind === 'Cọc').reduce((s, p) => s + p.amount, 0);
 
@@ -338,6 +354,16 @@ function viewToday() {
     <section class="block"><h2>Đơn chưa thu đủ <small>nhiều nhất trước</small></h2><div class="group">${owedRows || '<div class="empty">Không có đơn nào còn nợ</div>'}</div></section>`;
 }
 
+/* ---------- Dòng một khách có nhiều đơn: bấm vào mở trang đơn của khách ---------- */
+function customerOrdersRow(c, gs) {
+  const dr = gs.flatMap(groupDresses), owe = gs.reduce((s, g) => s + groupOwed(g), 0), total = gs.reduce((s, g) => s + groupTotal(g), 0);
+  const days = gs.map(g => g.last).filter(Boolean).sort((a, b) => a - b), MAX = 18;
+  const range = !days.length ? 'Chưa có ngày' : days.length === 1 ? dm(days[0]) : dm(days[0]) + ' → ' + dm(days[days.length - 1]);
+  return `<button class="row" data-act="open-customer" data-id="${c.id}">
+    <div class="main"><b>${esc(c.name)} <span class="multi cust">${gs.length} đơn</span></b><span>${range} · ${dr.length} váy</span>
+      <div class="moons">${dr.slice(0, MAX).map(d => moon(d.status)).join('')}${dr.length > MAX ? `<span class="more-moons">+${dr.length - MAX}</span>` : ''}</div></div>
+    <div class="side"><b>${money(total)}</b>${owe > 0 ? `<span class="owe">Còn ${money(owe)}</span>` : '<span class="ok">Đủ</span>'}</div></button>`;
+}
 /* ---------- Dòng đơn dùng chung (một thẻ cho cả đơn, trăng chia vạch theo từng lần) ---------- */
 const multiTag = g => g.lans.length > 1 ? ` <span class="multi">${g.lans.length} lần</span>` : '';
 function orderRow(g, showName = true) {
@@ -355,7 +381,7 @@ function orderRow(g, showName = true) {
    ===================================================================== */
 function viewOrders() {
   const f = state.filter;
-  return topbar({ title: 'Đơn hàng', sub: `<span id="order-count"></span>` }) + `
+  return topbar({ title: 'Đơn hàng', sub: `<span id="order-count"></span>` }) + dupBanner() + `
     <div class="search"><input class="field" id="order-q" type="search" placeholder="Gõ vài chữ: tên khách, kho, ghi chú…" value="${esc(f.q)}" autocomplete="off"></div>
     <div class="names" id="order-names"></div>
     <div class="fbar">
@@ -376,8 +402,11 @@ function renderOrderList() {
   const hay = g => [customerOf(g).name, ...g.lans.map(o => o.note), ...groupDresses(g).map(d => d.note + ' ' + d.source + ' ' + d.size)].join(' ');
   const list = state.groups.filter(g => (!q || matchText(hay(g), q)) && (f.status === 'all' || groupStatus(g) === +f.status) && (f.source === 'all' || groupDresses(g).some(d => d.source === f.source)))
     .sort((a, b) => cmpDate(a.last, b.last, f.sort === 'new' ? -1 : 1));
-  $('#order-list').innerHTML = list.map(g => orderRow(g)).join('') || '<div class="empty">Không có đơn phù hợp</div>';
-  $('#order-count').textContent = list.length + ' đơn';
+  // Gom theo khách, giữ thứ tự đơn mới nhất của mỗi khách; khách 1 đơn hiện thẳng đơn đó
+  const byCust = [];
+  list.forEach(g => { const b = byCust.find(x => x.cid === g.cid); b ? b.gs.push(g) : byCust.push({ cid: g.cid, gs: [g] }); });
+  $('#order-list').innerHTML = byCust.map(b => b.gs.length > 1 ? customerOrdersRow(customerOf(b.gs[0]), b.gs) : orderRow(b.gs[0])).join('') || '<div class="empty">Không có đơn phù hợp</div>';
+  $('#order-count').textContent = byCust.length + ' khách · ' + list.length + ' đơn';
   $('#order-names').innerHTML = nameSuggest(q);
 }
 // Bảng chọn trạng thái / kho, kèm số đơn
@@ -432,6 +461,7 @@ function viewSingle(g, o) {
         <div class="price">${money(d.price)}</div>
         <div class="meta">${esc(d.size || 'Chưa có size')} · ${esc(d.source || 'Chưa có kho')}</div>
         <div class="cost">${d.cost ? 'Giá nhập ' + money(d.cost) : 'Chưa ghi giá nhập'}</div>
+        ${dayTag(d, o)}
         ${d.note ? `<span class="dnote">${esc(d.note)}</span>` : '<span class="dnote empty">＋ Ghi chú váy</span>'}
       </button>
       <button class="moonbtn" data-act="cycle" data-id="${o.id}" data-i="${i}" aria-label="Đổi trạng thái váy ${i + 1}">${moon(d.status)}${STATUS[d.status]}</button>
@@ -462,7 +492,7 @@ function lanCard(o) {
   const dueFact = o.due ? `<span class="fact ${daysTo(o.due) <= 7 && o.dresses.some(d => d.status < 2) ? 'soon' : ''}">Hạn ${dm(o.due)} · ${dueText(o.due)}</span>` : '<span class="fact">Chưa hẹn giao</span>';
   const rows = o.dresses.map((d, i) => `<div class="mini">
       <button data-act="view-img" data-id="${o.id}" data-i="${i}" aria-label="Xem ảnh váy">${tile(d)}</button>
-      <button class="info" data-act="edit-dress" data-id="${o.id}" data-i="${i}"><b>${money(d.price)}</b>${esc(d.size || '—')} · ${esc(d.source || '—')}${d.note ? ' · ' + esc(d.note) : ''}</button>
+      <button class="info" data-act="edit-dress" data-id="${o.id}" data-i="${i}"><b>${money(d.price)}</b>${esc(d.size || '—')} · ${esc(d.source || '—')}${d.note ? ' · ' + esc(d.note) : ''}<br>${dayTag(d, o)}</button>
       <button class="st" data-act="cycle" data-id="${o.id}" data-i="${i}" aria-label="Đổi trạng thái">${moon(d.status)}${STATUS[d.status]}</button></div>`).join('');
   return `<div class="lan">
     <div class="lan-head">
@@ -527,7 +557,7 @@ async function splitLan(o) {
    5. KHÁCH HÀNG
    ===================================================================== */
 function viewCustomers() {
-  return topbar({ title: 'Khách hàng', sub: state.customers.length + ' khách' }) + `
+  return topbar({ title: 'Khách hàng', sub: state.customers.length + ' khách' }) + dupBanner() + `
     <div class="search"><input class="field" id="cust-search" type="search" placeholder="Gõ vài chữ, không cần dấu…" value="${esc(state.filter.cq || '')}" autocomplete="off"></div>
     <div class="names" id="cust-names"></div>
     <div class="block" style="margin-top:12px"><div class="group" id="cust-list"></div></div>`;
@@ -546,14 +576,17 @@ function renderCustomerList() {
 function viewCustomer(v) {
   const c = state.customers.find(x => x.id === v.id);
   if (!c) { state.stack.pop(); return viewCustomers(); }
-  const gs = groupsOf(c).sort((a, b) => cmpDate(a.last, b.last, -1)), owe = gs.reduce((s, g) => s + groupOwed(g), 0);
-  return topbar({ title: c.name, sub: `${gs.length} đơn · ${gs.reduce((s, g) => s + groupDresses(g).length, 0)} váy` + (owe > 0 ? ` · còn nợ <span class="owe">${money(owe)}</span>` : ''), back: backLabel() }) + `
-    <section class="block"><div class="group">
+  const gs = groupsOf(c).sort((a, b) => cmpDate(a.last, b.last, -1));
+  const total = gs.reduce((s, g) => s + groupTotal(g), 0), paid = gs.reduce((s, g) => s + groupPaid(g), 0);
+  return topbar({ title: c.name, sub: `${gs.length} đơn · ${gs.reduce((s, g) => s + groupDresses(g).length, 0)} váy · ${esc(c.channel)}${c.phone ? ' · ' + esc(c.phone) : ''}`, back: backLabel() }) +
+    (gs.length ? moneyCard(gs.length > 1 ? 'Còn nợ tất cả các đơn' : 'Còn nợ', total, paid) : '') + `
+    <section class="block"><h2>Các đơn <small>${gs.length} đơn</small></h2><div class="group">${gs.map(g => orderRow(g, false)).join('') || '<div class="empty">Chưa có đơn</div>'}</div>
+      <button class="btn ghost" style="margin-top:10px" data-act="new-order-for" data-id="${c.id}">＋ Đơn mới cho ${esc(c.name)}</button></section>
+    <section class="block"><h2>Thông tin khách</h2><div class="group">
       <button class="kv" data-act="edit-customer" data-id="${c.id}"><span>Kênh liên hệ</span><span class="val">${esc(c.channel)}</span></button>
       <button class="kv" data-act="edit-customer" data-id="${c.id}"><span>Số điện thoại</span><span class="val">${esc(c.phone) || 'Chưa có'}</span></button>
       <button class="kv" data-act="edit-customer" data-id="${c.id}"><span>Ghi chú</span><span class="val">${esc(c.note) || '—'}</span></button>
-    </div></section>
-    <section class="block"><h2>Lịch sử đơn</h2><div class="group">${gs.map(g => orderRow(g, false)).join('') || '<div class="empty">Chưa có đơn</div>'}</div></section>`;
+    </div></section>`;
 }
 // Bảng sửa khách: tên, kênh, số điện thoại, ghi chú
 function sheetCustomer() {
@@ -683,9 +716,9 @@ function viewSettings() {
    ===================================================================== */
 const newDress = prev => ({ price: 0, size: prev ? prev.size : '', source: prev ? prev.source : '', cost: 0, note: '', img: null, blob: null, stockId: null, stockImgId: '' });
 // Bắt đầu nhập đơn; từ chi tiết đơn bấm "Thêm lần đặt mới" thì khách và đơn đích đã chọn sẵn
-function startDraft(g) {
-  const c = g && customerOf(g);
-  state.draft = { cid: c ? c.id : null, name: c ? c.name : '', channel: c ? c.channel : 'Fb', target: g ? g.id : null, dresses: [newDress()], deposit: 0, due: '', note: '' };
+function startDraft(g, cust) {
+  const c = cust || (g && customerOf(g)), open = cust ? openGroupsOf(cust.id) : [];
+  state.draft = { cid: c ? c.id : null, name: c ? c.name : '', channel: c ? c.channel : 'Fb', target: g ? g.id : open.length ? open[0].id : null, dresses: [newDress()], deposit: 0, due: '', note: '' };
   navDir = 'push'; state.stack.push({ v: 'new' }); render();
 }
 // Các đơn còn váy chưa giao của khách đang chọn, mới nhất trước
@@ -729,6 +762,7 @@ function renderCustomerSuggest() {
   else if (q) {
     const found = state.customers.filter(c => matchText(c.name, q)).slice(0, 4);
     html = `<div class="group">${found.map(c => `<button class="row" data-act="pick-customer" data-id="${c.id}"><div class="main"><b>${esc(c.name)}</b><span>${esc(c.channel)} · ${groupsOf(c).length} đơn</span></div></button>`).join('')}
+      ${sameNameCustomer(q) ? `<div class="banner" style="margin:8px 0 0"><b>Đã có khách “${esc(sameNameCustomer(q).name)}”</b>Chạm vào tên ở trên để thêm đơn cho khách này. Nếu là người khác cùng tên, gõ thêm chữ để phân biệt, ví dụ “${esc(q)} Q7”.</div>` : ''}
       ${found.some(c => norm(c.name) === norm(q)) ? '' : `<div class="row" style="cursor:default;align-items:flex-start;flex-direction:column;gap:8px"><b style="font-weight:600">＋ Khách mới “${esc(q)}” — kênh liên hệ:</b>
         <div class="chips wrap">${CHANNELS.map(ch => `<button class="chip ${d.channel === ch ? 'on' : ''}" data-act="draft-channel" data-val="${ch}">${ch}</button>`).join('')}</div></div>`}</div>`;
   }
@@ -759,7 +793,8 @@ function renderDressForms() {
 }
 function refreshDraftSummary() {
   const d = state.draft, total = draftTotal(), g = d.target && groupById(d.target);
-  const ready = (d.cid || d.name.trim()) && d.dresses.some(x => x.price > 0);
+  const dup = !d.cid && d.name.trim() && sameNameCustomer(d.name);
+  const ready = (d.cid || d.name.trim()) && !dup && d.dresses.some(x => x.price > 0);
   const rest = Math.max(0, total - d.deposit), lan = g ? g.lans.length + 1 : 0;
   $('#dress-count').textContent = d.dresses.length + ' váy';
   $('#sum-left').innerHTML = g ? `Lần ${lan} · <b>${money(total)}</b>` : `Tổng <b>${money(total)}</b>`;
@@ -767,13 +802,14 @@ function refreshDraftSummary() {
   const c60 = $('#chip-60'); if (c60) c60.textContent = '60%' + (total ? ' = ' + money(Math.round(total * 0.6 / 1000) * 1000) : '');
   const full = document.querySelector('[data-kfull="dep"]'); if (full) full.textContent = depositNote();
   const btn = $('#save-order'); btn.disabled = !ready;
-  btn.textContent = !ready ? 'Nhập tên khách và giá ít nhất 1 váy' : g ? `Lưu lần ${lan} · ${d.dresses.length} váy` : `Lưu đơn · ${d.dresses.length} váy`;
+  btn.textContent = dup ? 'Tên khách đã có: chọn khách ở trên hoặc đổi tên' : !ready ? 'Nhập tên khách và giá ít nhất 1 váy' : g ? `Lưu lần ${lan} · ${d.dresses.length} váy` : `Lưu đơn · ${d.dresses.length} váy`;
 }
 // Lưu đơn mới: khách (nếu mới) + đơn + từng váy + cọc + ảnh + hàng sẵn đã bán; rồi mở chi tiết đơn ngay
 async function saveDraft() {
   const d = state.draft, btn = $('#save-order');
   btn.disabled = true; btn.textContent = 'Đang lưu…';
   let cid = d.cid;
+  if (!cid && sameNameCustomer(d.name)) { toast('Đã có khách tên này, chọn khách ở danh sách gợi ý'); btn.disabled = false; refreshDraftSummary(); return; }
   if (!cid) { cid = uid('kh'); await save('KhachHang', { id: cid, ten: d.name.trim(), kenh: d.channel, sdt: '', ghiChu: '' }); }
   const oid = uid('dh');
   await save('DonHang', { id: oid, khachId: cid, ngayDat: toIso(TODAY), hanGiao: d.due || '', note: d.note.trim(), sheetGoc: '', donChungId: d.target || '' });
@@ -782,7 +818,7 @@ async function saveDraft() {
   for (const x of dresses) {
     const id = uid('ct'); thuTu++; total += x.price;
     await save('ChiTietDon', { id, donHangId: oid, thuTu, giaTien: x.price, giaNhap: x.cost || '', size: x.size, kho: x.source, anhId: x.stockImgId || '',
-      ghiChuVay: x.note.trim(), trangThai: x.stockId ? 'Đã về' : 'Đặt', hangHoaId: x.stockId || '', noteGoc: '' });
+      ghiChuVay: x.note.trim(), trangThai: x.stockId ? 'Đã về' : 'Đặt', hangHoaId: x.stockId || '', noteGoc: '', ngayThem: toIso(TODAY) });
     if (x.blob) { await Store.imagePut(id, x.blob); state.imgUrls[id] = x.img; await Store.outboxAdd({ kind: 'image', tab: 'ChiTietDon', id }); }
     if (x.stockId) await upd('HangHoa', x.stockId, { trangThai: 'Đã bán', donHangId: oid });
   }
@@ -800,16 +836,21 @@ function closeSheet() { $('#sheet').classList.remove('open'); $('#sheet').innerH
 const sheetOpen = () => $('#sheet').classList.contains('open');
 // Bảng sửa 1 váy trong đơn (ảnh chọn ở đây gắn ngay vào váy)
 function sheetDress() {
-  const t = state.tmp;
-  openSheet(`<h3>Sửa váy ${t.i + 1}</h3>
-    <div class="photo-btns" style="margin-top:8px"><label>Chụp ảnh mới<input type="file" accept="image/*" capture="environment" data-dphoto="1"></label><label>Chọn từ thư viện<input type="file" accept="image/*" data-dphoto="1"></label></div>
-    <label class="lab">Giá tiền</label>${moneyField('ep', t.ep)}
+  const t = state.tmp, o = orderById(t.oid), adding = !t.did;
+  openSheet(`<h3>${adding ? 'Thêm váy vào đơn ' + dateLabel(o.date) : 'Sửa váy ' + (t.i + 1)}</h3>
+    <p class="sub" style="margin:0">${esc(customerOf(o).name + lanTag(o))} · váy thứ ${t.i + 1}</p>
+    <label class="lab">Ngày thêm</label><input class="field" type="date" data-in="ed-date" value="${t.date}">
+    <p class="small-note">${adding ? 'Tự lấy ngày hôm nay, chạm vào để chọn ngày khác' : 'Chạm vào để đổi ngày'}</p>
+    ${adding ? `<div class="photo-row" style="margin-top:10px"><div class="tile xl ${t.img ? '' : 'nopic'}" style="${t.img ? `background-image:url(${t.img})` : '--tone:#F3E4E8'}">${t.img ? '' : NOPIC + 'Chưa có ảnh'}</div>
+      <div class="col"><label class="lab" style="margin-top:0">Giá tiền</label>${moneyField('ep', t.ep)}</div></div>` : ''}
+    <div class="photo-btns" style="margin-top:8px"><label>${adding ? 'Chụp ảnh' : 'Chụp ảnh mới'}<input type="file" accept="image/*" capture="environment" data-dphoto="1"></label><label>Chọn từ thư viện<input type="file" accept="image/*" data-dphoto="1"></label></div>
+    ${adding ? '' : `<label class="lab">Giá tiền</label>${moneyField('ep', t.ep)}`}
     <label class="lab">Size</label><div class="chips wrap">${SIZES.map(s => `<button class="chip ${t.size === s ? 'on' : ''}" data-act="ed-size" data-val="${s}">${s}</button>`).join('')}</div>
     <label class="lab">Kho</label><div class="chips wrap">${state.sources.map(s => `<button class="chip ${t.source === s ? 'on' : ''}" data-act="ed-source" data-val="${esc(s)}">${esc(s)}</button>`).join('')}</div>
     <label class="lab">Giá nhập</label>${moneyField('ec', t.ec)}
     <label class="lab">Ghi chú váy</label><textarea class="field" data-in="ed-note" placeholder="Những gì trước đây bạn ghi lên ảnh">${esc(t.note)}</textarea>
-    <button class="btn" style="margin-top:16px" data-act="save-dress">Lưu</button>
-    <button class="btn ghost" style="margin-top:8px" data-act="del-dress-order">Xoá váy này khỏi đơn</button>`);
+    <button class="btn" style="margin-top:16px" data-act="save-dress">${adding ? 'Lưu váy' : 'Lưu'}</button>
+    ${adding ? '' : '<button class="btn ghost" style="margin-top:8px" data-act="del-dress-order">Xoá váy này khỏi đơn</button>'}`);
 }
 
 /* =====================================================================
@@ -826,7 +867,7 @@ function renderViewer(first) {
       ${n > 1 ? `<button class="vw-arrow l" data-act="viewer-nav" data-val="-1" aria-label="Váy trước">‹</button><button class="vw-arrow r" data-act="viewer-nav" data-val="1" aria-label="Váy sau">›</button>` : ''}
       ${big ? `<img class="vw-photo" src="${big}" alt="">` : `<div class="vw-img nopic" style="background:${d.tone}">Chưa có ảnh</div>`}
     </div>
-    <div class="vw-cap"><b>${money(d.price)}</b><span>${esc(d.size || 'chưa có size')} · ${esc(d.source || 'chưa có kho')} · ${STATUS[d.status]}</span>${d.note ? `<span class="dnote">${esc(d.note)}</span>` : ''}
+    <div class="vw-cap"><b>${money(d.price)}</b><span>${esc(d.size || 'chưa có size')} · ${esc(d.source || 'chưa có kho')} · ${STATUS[d.status]}</span>${dressDay(d, o) ? `<span class="vw-day">Ngày ${dm(dressDay(d, o))}${addedLater(d, o) ? ' · thêm sau đơn đặt ' + dm(o.date) : ''}</span>` : ''}${d.note ? `<span class="dnote">${esc(d.note)}</span>` : ''}
       <div class="vw-dots">${o.dresses.map((_, k) => `<i class="${k === i ? 'on' : ''}"></i>`).join('')}</div></div>`;
   v.classList.add('open'); vz.s = 1; vz.x = 0; vz.y = 0;
   if (REDUCE) return;
@@ -1022,17 +1063,25 @@ document.addEventListener('click', async e => {
       case 'view-img': openViewer(order().id, i); break;
       case 'viewer-close': closeViewer(); break;
       case 'viewer-nav': viewerNav(+val); break;
-      case 'edit-dress': { const dr = order().dresses[i];
-        state.tmp = { oid: order().id, did: dr.id, i, ep: dr.price, ec: dr.cost || 0, size: dr.size, source: dr.source, note: dr.note }; sheetDress(); break; }
+      case 'edit-dress': { const o = order(), dr = o.dresses[i], day = dressDay(dr, o);
+        state.tmp = { oid: o.id, did: dr.id, i, ep: dr.price, ec: dr.cost || 0, size: dr.size, source: dr.source, note: dr.note, date: day ? toIso(day) : '' }; sheetDress(); break; }
       case 'ed-size': state.tmp.size = val; sheetDress(); break;
       case 'ed-source': state.tmp.source = val; sheetDress(); break;
       case 'save-dress': { const t = state.tmp;
-        await upd('ChiTietDon', t.did, { giaTien: t.ep, giaNhap: t.ec || '', size: t.size, kho: t.source, ghiChuVay: (t.note || '').trim() });
+        if (!t.did) {                                               // thêm váy mới vào đơn có sẵn
+          if (!t.ep) { toast('Nhập giá tiền'); break; }
+          const o = orderById(t.oid), id = uid('ct');
+          await save('ChiTietDon', { id, donHangId: o.id, thuTu: o.dresses.length + 1, giaTien: t.ep, giaNhap: t.ec || '', size: t.size, kho: t.source, anhId: '',
+            ghiChuVay: (t.note || '').trim(), trangThai: 'Đặt', hangHoaId: '', noteGoc: '', ngayThem: t.date || toIso(TODAY) });
+          if (t.file) await attachImage('ChiTietDon', id, t.file);
+          closeSheet(); await commit(true, 'Đã thêm váy'); break;
+        }
+        await upd('ChiTietDon', t.did, { giaTien: t.ep, giaNhap: t.ec || '', size: t.size, kho: t.source, ghiChuVay: (t.note || '').trim(), ngayThem: t.date || '' });
         closeSheet(); await commit(true, 'Đã lưu váy'); break; }
       case 'del-dress-order': if (confirm('Xoá váy này khỏi đơn?')) { await remove('ChiTietDon', state.tmp.did); await Store.imageDel(state.tmp.did); closeSheet(); await commit(true, 'Đã xoá váy'); } break;
-      case 'add-dress-to-order': { const o = order(), last = o.dresses[o.dresses.length - 1];
-        await save('ChiTietDon', { id: uid('ct'), donHangId: o.id, thuTu: o.dresses.length + 1, giaTien: 0, giaNhap: '', size: last ? last.size : '', kho: last ? last.source : '', anhId: '', ghiChuVay: '', trangThai: 'Đặt', hangHoaId: '', noteGoc: '' });
-        await commit(true, 'Đã thêm váy — chạm vào để nhập giá'); break; }
+      case 'add-dress-to-order': { const o = order(), last = o.dresses[o.dresses.length - 1];   // mở bảng Thêm váy, ngày tự lấy hôm nay
+        state.tmp = { oid: o.id, did: null, i: o.dresses.length, ep: 0, ec: 0, size: last ? last.size : '', source: last ? last.source : '', note: '', date: toIso(TODAY), file: null, img: null };
+        sheetDress(); break; }
       case 'add-pay': { const o = order(); state.tmp = { oid: o.id, pay: 0 };
         openSheet(`<h3>Thêm thanh toán</h3><p class="sub" style="margin-bottom:0">Còn lại ${money(orderOwed(o))}</p>
           <label class="lab">Số tiền</label>${moneyField('pay', 0)}
@@ -1058,7 +1107,22 @@ document.addEventListener('click', async e => {
         if (o.id === g.id) await splitLan(o);                  // lần mang mã đơn chung: chuyển mã cho các lần còn lại trước
         const keep = g.lans.find(x => x.id !== o.id);
         await removeLan(o); closeSheet(); state.stack[state.stack.length - 1] = { v: 'order', id: keep.id }; await commit(true, 'Đã xoá lần đặt'); break; }
+      case 'merge-dups': { const d = duplicateCustomers();
+        if (!confirm('Gộp ' + d.map(x => x[0].name + ' (' + x.length + ')').join(', ') + '? Đơn của các bản trùng sẽ chuyển về một khách.')) break;
+        for (const set of d) {
+          const keep = set.slice().sort((a, b) => groupsOf(b).length - groupsOf(a).length || (a.id < b.id ? -1 : 1))[0];
+          for (const c of set.filter(x => x.id !== keep.id)) {
+            for (const o of state.orders.filter(x => x.cid === c.id)) await upd('DonHang', o.id, { khachId: keep.id });
+            const fill = {};
+            if (!keep.phone && c.phone) fill.sdt = c.phone;
+            if (!keep.note && c.note) fill.ghiChu = c.note;
+            if (Object.keys(fill).length) { await upd('KhachHang', keep.id, fill); Object.assign(keep, { phone: fill.sdt || keep.phone, note: fill.ghiChu || keep.note }); }
+            await remove('KhachHang', c.id);
+          }
+        }
+        await commit(true, 'Đã gộp khách trùng tên'); break; }
       case 'add-lan': startDraft(groupById(id)); break;
+      case 'new-order-for': startDraft(null, state.customers.find(x => x.id === id)); break;
       case 'merge-open': sheetMerge(groupById(id)); break;
       case 'merge-into': { const g = groupById(id), target = groupById(val);
         for (const o of g.lans) await upd('DonHang', o.id, { donChungId: target.id });
@@ -1072,6 +1136,7 @@ document.addEventListener('click', async e => {
       case 'edit-customer': { const c = state.customers.find(x => x.id === id); state.tmp = { cid: c.id, name: c.name, channel: c.channel, phone: c.phone, note: c.note }; sheetCustomer(); break; }
       case 'cu-channel': state.tmp.channel = val; sheetCustomer(); break;
       case 'save-customer': { const t = state.tmp; if (!t.name.trim()) { toast('Nhập tên'); break; }
+        if (sameNameCustomer(t.name, t.cid)) { toast('Đã có khách khác tên “' + t.name.trim() + '”, thêm chữ để phân biệt'); break; }
         await upd('KhachHang', t.cid, { ten: t.name.trim(), kenh: t.channel, sdt: t.phone.trim(), ghiChu: t.note.trim() }); closeSheet(); await commit(true, 'Đã lưu khách'); break; }
 
       /* Hàng hóa */
@@ -1158,6 +1223,7 @@ document.addEventListener('input', e => {
   else if (inn === 'cfg-url') state.tmp.cfg.url = t.value;
   else if (inn === 'cfg-key') state.tmp.cfg.key = t.value;
   else if (inn === 'lan-date') state.tmp.date = t.value;
+  else if (inn === 'ed-date') state.tmp.date = t.value;
   else if (inn === 'lan-due') state.tmp.due = t.value;
   else if (inn === 'lan-note') state.tmp.note = t.value;
 });
@@ -1171,6 +1237,8 @@ document.addEventListener('change', async e => {
       const dr = state.draft.dresses[+t.dataset.photo];
       dr.blob = await compressImage(file); dr.img = URL.createObjectURL(dr.blob); dr.stockImgId = '';
       renderDressForms();
+    } else if (t.dataset.dphoto && !state.tmp.did) {       // đang thêm váy mới: giữ ảnh, gắn khi bấm Lưu
+      state.tmp.file = file; state.tmp.img = URL.createObjectURL(file); sheetDress();
     } else if (t.dataset.dphoto) {                         // váy đã có trong đơn: gắn ngay
       await attachImage('ChiTietDon', state.tmp.did, file); closeSheet(); await commit(true, 'Đã đổi ảnh');
     } else if (t.dataset.sphoto) {                         // hàng hóa: có id thì gắn ngay, hàng mới thì gắn khi lưu
