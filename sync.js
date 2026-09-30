@@ -14,9 +14,11 @@ const Sync = {
   },
 
   // Kéo thay đổi từ Sheets về máy. full = true: lấy lại tất cả từ đầu.
-  async pull(full) {
+  // replace = true: xoá bản sao trong máy rồi ghi bản mới — chỉ làm SAU KHI đã tải thành công
+  async pull(full, replace) {
     const since = full ? '' : (await Store.metaGet('lastSync')) || '';
     const res = await Api.get('getChanges', { since });
+    if (replace) await Store.clearData();
     let n = 0;
     for (const tab of SYNC_TABS) {
       const recs = res.data[tab] || [];
@@ -61,14 +63,14 @@ const Sync = {
   },
 
   // Push rồi pull; lỗi ở đâu dừng ở đó, giữ hàng đợi, báo lên giao diện
-  async run(full) {
+  async run(full, replace) {
     if (!Api.ready()) { this.error = 'Chưa cài đặt kết nối'; await this.emit(); return false; }
     if (this.busy) return false;
     if (!navigator.onLine) { this.error = 'Mất mạng'; await this.emit(); return false; }
     this.busy = true; this.changed = false; await this.emit();
     try {
       await this.push();
-      await this.pull(full);
+      await this.pull(full, replace);
       this.error = '';
       return true;
     } catch (e) {

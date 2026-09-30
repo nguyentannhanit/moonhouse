@@ -36,7 +36,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.2';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.2.1';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -291,8 +291,11 @@ function backLabel() {
   const p = state.stack[state.stack.length - 2]; if (!p) return 'Quay lại';
   return { today: 'Hôm nay', orders: 'Đơn hàng', calendar: 'Lịch', stock: 'Hàng hóa', customers: 'Khách hàng', settings: 'Cài đặt', order: 'Đơn', customer: (state.customers.find(c => c.id === p.id) || {}).name }[p.v] || 'Quay lại';
 }
-// Nhắc cài đặt kết nối nếu chưa có
-const setupBanner = () => Api.ready() ? '' : `<div class="banner"><b>Chưa kết nối Google Sheets</b>Dữ liệu chỉ nằm trong máy này. Vào Cài đặt dán URL Web App và mã bí mật.<br><button data-act="tab" data-val="settings">Mở Cài đặt</button></div>`;
+// Nhắc cài đặt kết nối nếu chưa có; đồng bộ lỗi thì nói rõ lý do (dữ liệu trên Google không bị ảnh hưởng)
+const setupBanner = () => !Api.ready()
+  ? `<div class="banner"><b>Chưa kết nối Google Sheets</b>Dữ liệu chỉ nằm trong máy này. Vào Cài đặt dán URL Web App và mã bí mật.<br><button data-act="tab" data-val="settings">Mở Cài đặt</button></div>`
+  : Sync.error && Sync.error !== 'Mất mạng'
+  ? `<div class="banner err"><b>Không đồng bộ được với Google Sheets</b>${esc(Sync.error)}. Dữ liệu trên Google vẫn an toàn.<br><button data-act="sync-now">Thử lại</button></div>` : '';
 
 /* =====================================================================
    1. HÔM NAY
@@ -1120,8 +1123,8 @@ document.addEventListener('click', async e => {
         if (!confirm('Tải lại toàn bộ từ Sheets? Thay đổi đang chờ sẽ được gửi trước.')) break;
         toast('Đang gửi thay đổi chờ…');
         try { await Sync.push(); } catch (err) { toast('Không gửi được: ' + err.message); break; }
-        await Store.clearData(); state.orders = []; state.customers = []; state.stock = [];
-        toast('Đang tải lại…'); if (await Sync.run(true)) { await loadModel(); render(true); toast('Đã tải lại từ Sheets'); } else toast('Lỗi: ' + Sync.error); break; }
+        toast('Đang tải lại…');                                   // tải xong mới thay bản trong máy; lỗi thì giữ nguyên
+        if (await Sync.run(true, true)) { await loadModel(); render(true); toast('Đã tải lại từ Sheets'); } else { render(true); toast('Không tải được, dữ liệu trong máy giữ nguyên. ' + Sync.error); } break; }
       case 'add-source': { const v = $('#new-source').value.trim(); if (!v) break; if (state.sources.some(s => norm(s) === norm(v))) { toast('Đã có kho này'); break; }
         await save('Nguon', { id: uid('ng'), ten: v, thuTu: state.sourceRecs.length + 1 }); await commit(true, 'Đã thêm kho'); break; }
       case 'del-source': if (confirm('Xoá kho này khỏi danh sách? Váy đã ghi kho này vẫn giữ tên.')) { await remove('Nguon', id); await commit(true); } break;
