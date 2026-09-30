@@ -39,7 +39,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.4';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.5';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -49,6 +49,7 @@ const PAY_KINDS = ['Cọc', 'Thanh toán', 'Thanh toán đủ'];
 const CUSTOMER_TYPES = ['Sỉ', 'Lẻ'];
 const STOCK_STATUS = ['Sẵn', 'Đã bán'];
 const TONES = ['#EBD9DE', '#E6D6E0', '#F1DDD3', '#DDE3DA', '#EDE4D8', '#E3D8E8', '#F3D9DF', '#D9E1E4'];
+const CHEV = '<svg class="chev" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4l6 6-6 6"/></svg>';   // mũi tên của danh sách xổ xuống
 const NOPIC = '<svg viewBox="0 0 24 24"><path d="M8.6 2.6c.9 2 2 3 3.4 3s2.5-1 3.4-3l1.3 5.6c-1.5.9-3.1 1.3-4.7 1.3s-3.2-.4-4.7-1.3z"/><path d="M7.3 8.9C5.6 12.4 4.4 16.1 3.9 19.9c2.6.9 5.3 1.4 8.1 1.4s5.5-.5 8.1-1.4c-.5-3.8-1.7-7.5-3.4-11-1.5.9-3.1 1.3-4.7 1.3s-3.2-.4-4.7-1.3z"/></svg>';
 
 /* ---------- Trạng thái giao diện + mô hình trong bộ nhớ ---------- */
@@ -248,11 +249,12 @@ const topbar = ({ title, sub, back }) => `
 function syncText() {
   if (!Api.ready()) return 'Chưa kết nối';
   if (Sync.busy) return 'Đang đồng bộ…';
+  if (Sync.imgBusy) return 'Đang gửi ảnh…';
   if (Sync.pending) return Sync.pending + ' chờ gửi';
   if (Sync.error) return 'Lỗi đồng bộ';
   return Sync.lastAt ? 'Đã đồng bộ ' + hhmm(Sync.lastAt) : 'Chưa đồng bộ';
 }
-function syncClass() { return !Api.ready() ? 'off' : Sync.busy ? 'busy' : (Sync.pending || Sync.error) ? 'err' : ''; }
+function syncClass() { return !Api.ready() ? 'off' : Sync.busy || Sync.imgBusy ? 'busy' : (Sync.pending || Sync.error) ? 'err' : ''; }
 // Cập nhật viên đồng bộ tại chỗ (không vẽ lại cả màn)
 function refreshSyncPill() { const el = $('#sync'); if (el) { el.textContent = syncText(); el.className = 'pill ' + syncClass(); } }
 
@@ -316,58 +318,85 @@ const setupBanner = () => !Api.ready()
   : Sync.error && Sync.error !== 'Mất mạng'
   ? `<div class="banner err"><b>Không đồng bộ được với Google Sheets</b>${esc(Sync.error)}. Dữ liệu trên Google vẫn an toàn.<br><button data-act="sync-now">Thử lại</button></div>` : '';
 
+/* ---------- Khối gọn dùng chung ---------- */
+// Nhớ mục xổ xuống nào đang mở; trình duyệt chặn bộ nhớ (chế độ riêng tư) thì dùng mặc định
+const DISC = (() => { try { return JSON.parse(localStorage.getItem('mh_disc') || '{}'); } catch (e) { return {}; } })();
+// Danh sách xổ xuống: một dòng tiêu đề (tên, tóm tắt bên phải, mũi tên), chạm để mở / đóng; o.add = nút nhỏ cạnh tiêu đề
+function disc(key, title, sum, body, o = {}) {
+  const open = o.force || (key in DISC ? DISC[key] : !!o.open);
+  return `<section class="disc${open ? ' open' : ''}${o.sub ? ' sub' : ''}"><div class="disc-h"><button class="disc-tg" data-act="disc" data-val="${key}" aria-expanded="${open}">
+    <span class="${o.sub ? 't2' : 't'}">${title}</span><span class="c ${o.tone || ''}"${o.sumId ? ` id="${o.sumId}"` : ''}>${sum}</span>${CHEV}</button>${o.add || ''}</div>
+    <div class="disc-b"><div class="disc-in">${body}</div></div></section>`;
+}
+// Danh sách dài: hiện n dòng đầu, phần còn lại nằm sau nút "Xem thêm"
+function moreList(rows, n, label) {
+  if (rows.length <= n) return rows.join('');
+  return rows.slice(0, n).join('') + `<div class="more-b" hidden>${rows.slice(n).join('')}</div><button class="more-row" data-act="more" data-val="${esc(label)}">${esc(label)}</button>`;
+}
+// Nút thêm nhỏ nằm cạnh tiêu đề một phần
+const addBtn = (act, label, attrs = '') => `<button class="h-add" data-act="${act}" ${attrs}>${label}</button>`;
+// Đếm váy của một đơn: "n chưa giao · m đã về", kèm thanh ba màu (đã về · đặt · đã giao) khi từ 5 váy
+function stLine(dr) {
+  const n = [0, 1, 2].map(k => dr.filter(d => d.status === k).length), left = n[0] + n[1];
+  const txt = !dr.length ? 'Chưa có váy' : !left ? '<span class="ok">Đã giao đủ</span>'
+    : `<b>${left}</b> chưa giao${n[1] ? ' · ' + n[1] + ' đã về' : ''}${n[2] ? ' · ' + n[2] + ' đã giao' : ''}`;
+  const bar = dr.length >= 5 ? `<div class="stbar">${[[1, 'v'], [0, 'd'], [2, 'g']].filter(([k]) => n[k]).map(([k, c]) => `<i class="${c}" style="flex:${n[k]}"></i>`).join('')}</div>` : '';
+  return bar + `<div class="stline">${txt}</div>`;
+}
+
 /* =====================================================================
    1. HÔM NAY
    ===================================================================== */
 function viewToday() {
   const sel = state.daySel, selN = daysTo(sel), dayEvs = eventsOn(sel);
   const selLabel = selN === 0 ? 'Hôm nay' : selN === 1 ? 'Ngày mai' : WEEKDAYS[sel.getDay()] + ' ' + dm(sel);
-  const owedGroups = state.groups.filter(g => groupOwed(g) > 0).sort((a, b) => groupOwed(b) - groupOwed(a));
-  const totalOwed = owedGroups.reduce((s, g) => s + groupOwed(g), 0);
+  // Khách còn nợ: gộp mọi đơn của một khách thành một dòng, nợ nhiều nhất trước
+  const owers = state.customers.map(c => {
+    const gs = groupsOf(c);
+    return { c, gs, owe: gs.reduce((s, g) => s + groupOwed(g), 0), total: gs.reduce((s, g) => s + groupTotal(g), 0), paid: gs.reduce((s, g) => s + groupPaid(g), 0), n: gs.reduce((s, g) => s + groupDresses(g).length, 0) };
+  }).filter(x => x.owe > 0).sort((a, b) => b.owe - a.owe);
+  const totalOwed = owers.reduce((s, x) => s + x.owe, 0);
   const due = state.orders.filter(o => o.due && daysTo(o.due) <= 7 && o.dresses.some(d => d.status < 2)).sort((a, b) => a.due - b.due);
-  let lastKey = null, dueHtml = '';
-  due.forEach(o => {
-    const n = daysTo(o.due), key = n < 0 ? 'late' : String(n);
-    if (key !== lastKey) { dueHtml += `<div class="dayhead ${n < 0 ? 'late' : ''}">${n < 0 ? 'Quá hạn' : n === 0 ? 'Hôm nay' : n === 1 ? 'Ngày mai' : WEEKDAYS[o.due.getDay()] + ', ' + dm(o.due)}</div>`; lastKey = key; }
-    const open = o.dresses.filter(d => d.status < 2), owe = orderOwed(o);
-    dueHtml += `<button class="due" data-act="open-order" data-id="${o.gid}">
-      <div class="thumbs">${open.slice(0, 2).map(d => tile(d, '', true)).join('')}${open.length > 2 ? `<span class="more">+${open.length - 2}</span>` : ''}</div>
-      <div class="main"><b>${esc(customerOf(o).name + lanTag(o))}</b>
-        <span>${open.length} váy chưa giao${n < 0 ? ` · <span class="owe" style="display:inline">quá ${-n} ngày</span>` : ''}</span>
-        ${owe > 0 ? `<span class="owe">Còn ${money(owe)}</span>` : `<span class="ok">Đã thu đủ</span>`}
-      </div></button>`;
+  const late = due.filter(o => daysTo(o.due) < 0).length;
+  const dueRows = due.map(o => {
+    const n = daysTo(o.due), open = o.dresses.filter(d => d.status < 2), owe = orderOwed(o);
+    return `<button class="row" data-act="open-order" data-id="${o.gid}">${tile(open[0], '', true)}
+      <div class="main"><b>${esc(customerOf(o).name + lanTag(o))}</b><span>${open.length} váy chưa giao · <em class="${n < 0 ? 'late' : n <= 2 ? 'soon' : ''}">${dueText(o.due)}</em></span></div>
+      <div class="side">${owe > 0 ? `<b class="owe">${money(owe)}</b><span class="muted">còn nợ</span>` : '<span class="ok">Đã thu đủ</span>'}</div></button>`;
   });
-  const owedRows = owedGroups.map(g => {
-    const pct = Math.min(100, Math.round(groupPaid(g) / (groupTotal(g) || 1) * 100));
-    return `<button class="row" data-act="open-order" data-id="${g.id}">
-      <div class="main"><b>${esc(customerOf(g).name)}${multiTag(g)}</b><span>${groupDresses(g).length} váy · đã thu ${pct}%</span><div class="bar"><i style="width:${pct}%;--pc:${progColor(pct)}"></i></div></div>
-      <div class="side"><b class="owe">${money(groupOwed(g))}</b></div></button>`;
-  }).join('');
+  const oweRows = owers.map(x => {
+    const pct = Math.min(100, Math.round(x.paid / (x.total || 1) * 100)), one = x.gs.length === 1;
+    return `<button class="row" data-act="${one ? 'open-order' : 'open-customer'}" data-id="${one ? x.gs[0].id : x.c.id}">
+      <div class="main"><b>${esc(x.c.name)}${one ? '' : ` <span class="multi cust">${x.gs.length} đơn</span>`}</b><span>${x.n} váy · đã thu ${pct}%</span><div class="bar"><i style="width:${pct}%;--pc:${progColor(pct)}"></i></div></div>
+      <div class="side"><b class="owe">${money(x.owe)}</b></div></button>`;
+  });
   const wd = WEEKDAYS[TODAY.getDay()] + ', ' + dm(TODAY) + '/' + TODAY.getFullYear();
   const empty = !state.orders.length ? `<div class="banner" style="background:rgba(199,96,122,.1);color:var(--ink)"><b>Chưa có đơn nào</b>Bấm nút giữa → Thêm đơn mới. ${Api.ready() ? 'Nếu đã có dữ liệu trên Sheets, vào Cài đặt → Đồng bộ lại toàn bộ.' : ''}</div>` : '';
   return topbar({ title: 'Hôm nay', sub: wd }) + setupBanner() + empty + `
-    <div class="hero tilt"><i class="orb"></i><div class="lbl">Tổng còn phải thu</div>
-      <div class="num" id="owed-num" data-val="${totalOwed}">${money(totalOwed)}</div><div class="note">${owedGroups.length} đơn chưa thu đủ</div>
+    <div class="hero"><i class="orb"></i><div class="lbl">Tổng còn phải thu</div>
+      <div class="num" id="owed-num" data-val="${totalOwed}">${money(totalOwed)}</div><div class="note">${owers.length} khách còn nợ</div>
       <div class="foot"><span>Cần giao trong 7 ngày</span><b>${due.reduce((s, o) => s + o.dresses.filter(d => d.status < 2).length, 0)} váy</b></div></div>
     ${weekStrip(sel)}${legend()}
-    <section class="block" style="margin-top:14px"><h2>${selLabel} <small><button class="linkbtn" data-act="open-calendar" style="min-height:auto">Xem cả tháng ›</button></small></h2>
-      <div class="group">${dayEvs.map(eventRow).join('') || '<div class="empty">Không có lịch hẹn hay hạn giao</div>'}</div>
-      ${state.orders.length ? `<button class="btn ghost" style="margin-top:10px" data-act="add-appt" data-iso="${toIso(sel)}">＋ Thêm lịch hẹn</button>` : ''}</section>
-    <section class="block"><h2>Sắp tới hạn giao <small>7 ngày tới</small></h2>${dueHtml || '<div class="empty group">Không có váy nào tới hạn</div>'}</section>
-    <section class="block"><h2>Đơn chưa thu đủ <small>nhiều nhất trước</small></h2><div class="group">${owedRows || '<div class="empty">Không có đơn nào còn nợ</div>'}</div></section>`;
+    ${disc('today-day', selLabel, dayEvs.length ? dayEvs.length + ' việc' : 'Không có gì',
+      `<div class="group">${dayEvs.map(eventRow).join('') || '<div class="empty">Không có lịch hẹn hay hạn giao</div>'}<button class="more-row" data-act="open-calendar">Xem cả tháng ›</button></div>`,
+      { open: true, add: state.orders.length ? addBtn('add-appt', '＋ Hẹn', `data-iso="${toIso(sel)}"`) : '' })}
+    ${disc('today-due', 'Cần giao', late ? late + ' đơn quá hạn' : due.length ? due.length + ' đơn trong 7 ngày' : 'Không có',
+      `<div class="group">${moreList(dueRows, 3, 'Xem thêm ' + (dueRows.length - 3) + ' đơn') || '<div class="empty">Không có váy nào tới hạn</div>'}</div>`, { open: true, tone: late ? 'owe' : '' })}
+    ${disc('today-owe', 'Khách còn nợ', owers.length ? owers.length + ' khách' : 'Không ai nợ',
+      `<div class="group">${moreList(oweRows, 5, 'Xem cả ' + owers.length + ' khách') || '<div class="empty">Không có khách nào còn nợ</div>'}</div>`, { open: true })}`;
 }
 
 /* ---------- Dòng một khách có nhiều đơn: bấm vào mở trang đơn của khách ---------- */
 function customerOrdersRow(c, gs) {
   const dr = gs.flatMap(groupDresses), owe = gs.reduce((s, g) => s + groupOwed(g), 0), total = gs.reduce((s, g) => s + groupTotal(g), 0);
-  const days = gs.map(g => g.last).filter(Boolean).sort((a, b) => a - b), MAX = 18;
+  const days = gs.map(g => g.last).filter(Boolean).sort((a, b) => a - b);
   const range = !days.length ? 'Chưa có ngày' : days.length === 1 ? dm(days[0]) : dm(days[0]) + ' → ' + dm(days[days.length - 1]);
   return `<button class="row" data-act="open-customer" data-id="${c.id}">
     <div class="main"><b>${esc(c.name)} <span class="multi cust">${gs.length} đơn</span></b><span>${range} · ${dr.length} váy</span>
-      <div class="moons">${dr.slice(0, MAX).map(d => moon(d.status)).join('')}${dr.length > MAX ? `<span class="more-moons">+${dr.length - MAX}</span>` : ''}</div></div>
+      ${stLine(dr)}</div>
     <div class="side"><b>${money(total)}</b>${owe > 0 ? `<span class="owe">Còn ${money(owe)}</span>` : '<span class="ok">Đủ</span>'}</div></button>`;
 }
-/* ---------- Dòng đơn dùng chung (một thẻ cho cả đơn, trăng chia vạch theo từng lần) ---------- */
+/* ---------- Dòng đơn dùng chung (một thẻ cho cả đơn, đếm váy theo trạng thái) ---------- */
 const multiTag = g => g.lans.length > 1 ? ` <span class="multi">${g.lans.length} lần</span>` : '';
 function orderRow(g, showName = true) {
   const owe = groupOwed(g), n = groupDresses(g).length, due = nextDue(g);
@@ -375,7 +404,7 @@ function orderRow(g, showName = true) {
   const sub = [showName ? groupDateLabel(g) : '', n + ' váy', dueTxt].filter(Boolean).join(' · ');
   return `<button class="row" data-act="open-order" data-id="${g.id}">
     <div class="main"><b>${showName ? esc(customerOf(g).name) : groupDateLabel(g)}${multiTag(g)}</b><span>${sub}</span>
-      <div class="moons">${g.lans.map(o => o.dresses.map(d => moon(d.status)).join('')).join('<i class="sep"></i>')}</div></div>
+      ${stLine(groupDresses(g))}</div>
     <div class="side"><b>${money(groupTotal(g))}</b>${owe > 0 ? `<span class="owe">Còn ${money(owe)}</span>` : '<span class="ok">Đủ</span>'}</div></button>`;
 }
 
@@ -433,18 +462,25 @@ function viewOrder(v) {
 // Thẻ tiền cả đơn
 function moneyCard(label, total, paid) {
   const owe = Math.max(0, total - paid), pct = total ? Math.min(100, Math.round(paid / total * 100)) : 0;
-  return `<div class="money tilt"><div class="line">${label}</div><div class="rest ${owe > 0 ? 'owe' : 'ok'}">${owe > 0 ? money(owe) : 'Đã thu đủ'}</div>
+  return `<div class="money"><div class="line">${label}</div><div class="rest ${owe > 0 ? 'owe' : 'ok'}">${owe > 0 ? money(owe) : 'Đã thu đủ'}</div>
     <div class="bar"><i style="width:${pct}%;--pc:${progColor(pct)}"></i></div>
     <div class="line">Tổng ${money(total)} · đã thu ${money(paid)}</div></div>`;
 }
 // Nhãn hạn giao: quá hạn / hôm nay / còn n ngày
 const dueText = d => { const n = daysTo(d); return n < 0 ? 'quá ' + -n + ' ngày' : n === 0 ? 'hôm nay' : 'còn ' + n + ' ngày'; };
-// Lịch hẹn của cả đơn
+// Lịch hẹn của cả đơn: thu thành một dòng, nút ＋ Hẹn cạnh tiêu đề
 function apptSection(g) {
-  const appts = g.lans.flatMap(o => o.appts.map(a => Object.assign({ oid: o.id }, a))).sort((a, b) => a.date - b.date).map(a => { const n = daysTo(a.date);
+  const list = g.lans.flatMap(o => o.appts.map(a => Object.assign({ oid: o.id }, a))).sort((a, b) => a.date - b.date);
+  const rows = list.map(a => { const n = daysTo(a.date);
     return `<button class="kv" data-act="edit-appt" data-aid="${a.id}"><span style="display:flex;align-items:center;gap:8px"><i class="dot" style="background:${evColor(a)}"></i>${esc(a.kind)}${a.note ? ' · ' + esc(a.note) : ''}</span><b>${dm(a.date)}${n < 0 ? '' : ` <span class="tag ${n <= 2 ? 'soon' : ''}">${dueText(a.date)}</span>`}</b></button>`; }).join('');
-  return `<section class="block"><h2>Lịch hẹn</h2><div class="group">${appts || '<div class="empty">Chưa có lịch hẹn</div>'}</div>
-    <button class="btn ghost" style="margin-top:10px" data-act="add-appt" data-id="${g.lans[0].id}">＋ Thêm lịch hẹn</button></section>`;
+  const next = list.find(a => daysTo(a.date) >= 0);
+  return disc('order-appt', 'Lịch hẹn', !list.length ? 'Chưa có' : next ? 'Gần nhất ' + dm(next.date) : list.length + ' lịch đã qua',
+    `<div class="group">${rows || '<div class="empty">Chưa có lịch hẹn</div>'}</div>`, { add: addBtn('add-appt', '＋ Hẹn', `data-id="${g.lans[0].id}"`) });
+}
+// Các lần thu tiền thu thành một dòng có tóm tắt đã thu
+function payDisc(title, rows, paid, total, add) {
+  return disc('order-pay', title, !paid ? 'Chưa thu' : paid >= total ? 'Đã thu đủ' : 'Đã thu ' + money(paid),
+    `<div class="group">${rows || '<div class="empty">Chưa có khoản nào</div>'}</div>`, { tone: !paid ? 'owe' : paid >= total ? 'ok' : '', add });
 }
 // Nút cuối trang chung cho mọi đơn: thêm lần đặt, gộp, xoá
 function groupFooter(g) {
@@ -455,7 +491,7 @@ function groupFooter(g) {
       <button class="linkbtn" data-act="change-cust" data-id="${g.id}" style="justify-content:flex-start">Đổi khách</button></span>
       <button class="linkbtn danger" data-act="del-order" data-id="${g.id}">Xoá ${g.lans.length > 1 ? 'cả đơn' : 'đơn này'}</button></div></section>`;
 }
-// Đơn chỉ có một lần: bố cục như trước
+// Đơn chỉ có một lần: váy lên đầu, ngày đặt / hạn giao thành hai ô nhỏ, thanh toán / lịch hẹn / note thu gọn
 function viewSingle(g, o) {
   const c = customerOf(o);
   const dresses = dressList(g, o, (d, i, sel) => `
@@ -473,20 +509,17 @@ function viewSingle(g, o) {
     </div>`);
   const pays = o.pays.map(p => `<button class="kv" data-act="edit-pay" data-id="${o.id}" data-pid="${p.id}"><span>${dm(p.date)} · ${esc(p.kind)}</span><b>${money(p.amount)}</b></button>`).join('');
   const dueTag = o.due ? ` <span class="tag ${daysTo(o.due) < 0 ? 'late' : daysTo(o.due) <= 2 ? 'soon' : ''}">${dueText(o.due)}</span>` : '';
-  return topbar({ title: c.name, sub: `${o.date ? 'Đặt ' + dm(o.date) : 'Chưa có ngày đặt'} · ${esc(c.channel)}${o.sheetGoc ? ' · từ sheet ' + esc(o.sheetGoc) : ''}`, back: backLabel() }) +
+  const noteGoc = o.dresses.map(d => d.noteGoc).filter(Boolean);
+  return topbar({ title: c.name, sub: `${o.dresses.length} váy · ${esc(c.channel)}${o.sheetGoc ? ' · từ sheet ' + esc(o.sheetGoc) : ''}`, back: backLabel() }) +
     moneyCard('Còn lại', orderTotal(o), orderPaid(o)) + `
-    <section class="block"><div class="group">
-      <button class="kv" data-act="edit-lan" data-id="${o.id}"><span>Ngày đặt</span><span class="val">${dateLabel(o.date)}</span></button>
-      <button class="kv" data-act="edit-lan" data-id="${o.id}"><span>Hạn giao</span><span class="val">${o.due ? dm(o.due) + dueTag : 'Chưa hẹn'}</span></button>
-    </div></section>
+    <div class="facts2"><button class="fct" data-act="edit-lan" data-id="${o.id}">Ngày đặt<b>${dateLabel(o.date)}</b></button>
+      <button class="fct" data-act="edit-lan" data-id="${o.id}">Hạn giao<b>${o.due ? dm(o.due) + dueTag : 'Chưa hẹn'}</b></button></div>
+    <section class="block"><h2>Váy trong đơn ${addBtn('add-dress-to-order', '＋ Thêm váy', `data-id="${o.id}"`)}</h2>
+      ${dressTools(g)}<div class="group">${dresses || '<div class="empty">Đơn chưa có váy</div>'}</div></section>
+    ${payDisc('Thanh toán', pays, orderPaid(o), orderTotal(o), addBtn('add-pay', '＋ Thu tiền', `data-id="${o.id}"`))}
     ${apptSection(g)}
-    <section class="block"><h2>Váy trong đơn <small>${o.dresses.length} váy</small></h2><p class="sub" style="margin:-4px 0 10px">Chạm trăng để đổi trạng thái · chạm ảnh để xem to · chạm chữ để sửa</p>
-      ${dressTools(g)}<div class="group">${dresses || '<div class="empty">Đơn chưa có váy</div>'}</div>
-      <button class="btn ghost" style="margin-top:10px" data-act="add-dress-to-order" data-id="${o.id}">＋ Thêm váy vào đơn</button></section>
-    <section class="block"><h2>Thanh toán</h2><div class="group">${pays || '<div class="empty">Chưa có khoản nào</div>'}</div>
-      <button class="btn ghost" style="margin-top:10px" data-act="add-pay" data-id="${o.id}">＋ Thêm thanh toán</button></section>
-    <section class="block"><h2>Note đơn</h2><textarea class="field" data-in="order-note" data-id="${o.id}" placeholder="Ví dụ: Trước 5/8, khách báo qua Fb">${esc(o.note)}</textarea>
-      ${o.dresses.some(d => d.noteGoc) ? `<p class="small-note">Note gốc từ Excel: ${o.dresses.map(d => d.noteGoc).filter(Boolean).map(esc).join(' · ')}</p>` : ''}</section>
+    ${disc('order-note', 'Note đơn', o.note ? esc(o.note.slice(0, 28)) + (o.note.length > 28 ? '…' : '') : noteGoc.length ? 'Có note gốc từ Excel' : 'Trống',
+      `<textarea class="field" data-in="order-note" data-id="${o.id}" placeholder="Ví dụ: Trước 5/8, khách báo qua Fb">${esc(o.note)}</textarea>${noteGoc.length ? `<p class="small-note">Note gốc từ Excel: ${noteGoc.map(esc).join(' · ')}</p>` : ''}`)}
     ${groupFooter(g)}${selBar(g)}`;
 }
 // Trạng thái váy chụp lúc mở đơn: váy vừa đổi trạng thái nằm yên chỗ cũ đến khi rời đơn, chạm nhầm còn sửa ngay được
@@ -516,14 +549,19 @@ function dressList(g, o, row) {
   }
   return html || (o.dresses.length ? `<div class="empty">Không có váy ${STATUS[s.mode]} ở đây</div>` : '');
 }
-// Hàng lọc váy + nút Chọn nhiều; chỉ hiện ở đơn từ 5 váy trở lên
+// Nút "Xem theo" (mở bảng chọn) + nút Chọn nhiều; chỉ hiện ở đơn từ 5 váy trở lên
 function dressTools(g) {
-  const s = snapOf(g), all = groupDresses(g);
-  if (all.length < 5) return '';
-  const cnt = k => all.filter(d => d.status === k).length;
-  const opts = [['need', 'Cần giao trước'], ['input', 'Thứ tự nhập'], [1, 'Đã về ' + cnt(1)], [0, 'Đặt ' + cnt(0)], [2, 'Đã giao ' + cnt(2)]];
-  return `<div class="dtools-bar"><span>Xem theo</span><button class="linkbtn" data-act="${s.sel ? 'sel-cancel' : 'sel-start'}">${s.sel ? 'Thôi chọn' : 'Chọn nhiều váy'}</button></div>
-    <div class="chips dtools">${opts.map(([k, l]) => `<button class="chip ${s.mode === k ? 'on' : ''}" data-act="dview" data-val="${k}">${l}</button>`).join('')}</div>`;
+  const s = snapOf(g);
+  if (groupDresses(g).length < 5) return '';
+  return `<div class="dtools-row"><button class="fbtn ${s.mode !== 'need' ? 'on' : ''}" data-act="dview-open" data-id="${g.id}"><span>Xem theo</span><b>${DVIEW.find(x => x[0] === s.mode)[1]}</b></button>
+    <button class="linkbtn" data-act="${s.sel ? 'sel-cancel' : 'sel-start'}">${s.sel ? 'Thôi chọn' : 'Chọn nhiều váy'}</button></div>`;
+}
+// Các cách xem váy trong đơn
+const DVIEW = [['need', 'Cần giao trước', 'Đã về lên đầu, đã giao gom cuối'], ['input', 'Thứ tự nhập', 'Đủ váy như lúc nhập'], [1, 'Chỉ Đã về'], [0, 'Chỉ Đặt'], [2, 'Chỉ Đã giao']];
+// Bảng chọn cách xem váy, kèm số váy từng trạng thái
+function sheetDview(g) {
+  const s = snapOf(g), all = groupDresses(g), cnt = k => all.filter(d => d.status === k).length;
+  openSheet(`<h3>Xem váy theo</h3><div class="opt-grid">${DVIEW.map(([k, l, hint]) => `<button class="opt ${s.mode === k ? 'on' : ''}" data-act="dview" data-val="${k}"><b>${l}</b><span>${typeof k === 'number' ? cnt(k) + ' váy' : hint}</span></button>`).join('')}</div>`);
 }
 // Thanh đáy khi đang chọn nhiều: đổi cả loạt váy đã chọn sang một trạng thái
 function selBar(g) {
@@ -562,9 +600,9 @@ function viewGroup(g) {
     .map(({ o, p }) => `<button class="kv" data-act="edit-pay" data-id="${o.id}" data-pid="${p.id}"><span>${dm(p.date)} · ${esc(p.kind)} · lần ${o.lanNo}</span><b>${money(p.amount)}</b></button>`).join('');
   return topbar({ title: c.name, sub: `${g.lans.length} lần đặt · ${groupDresses(g).length} váy · ${esc(c.channel)}`, back: backLabel() }) +
     moneyCard('Còn lại cả đơn', groupTotal(g), groupPaid(g)) + `
-    <section class="block"><p class="sub" style="margin:0 0 10px">Chạm trăng để đổi trạng thái · chạm ảnh để xem to · chạm chữ để sửa</p>${dressTools(g)}${g.lans.map(lanCard).join('')}</section>
+    <section class="block">${dressTools(g)}${g.lans.map(lanCard).join('')}</section>
     ${apptSection(g)}
-    <section class="block"><h2>Các lần thu tiền</h2><div class="group">${pays || '<div class="empty">Chưa có khoản nào</div>'}</div><p class="small-note">Chạm vào một khoản để sửa hoặc xoá.</p></section>
+    ${payDisc('Các lần thu tiền', pays, groupPaid(g), groupTotal(g), '')}
     ${groupFooter(g)}${selBar(g)}`;
 }
 // Bảng sửa một lần: ngày đặt, hạn giao, ghi chú; tách ra đơn riêng; xoá lần
@@ -610,13 +648,22 @@ function viewCustomers() {
   return topbar({ title: 'Khách hàng', sub: state.customers.length + ' khách' }) + dupBanner() + `
     <div class="search"><input class="field" id="cust-search" type="search" placeholder="Gõ vài chữ, không cần dấu…" value="${esc(state.filter.cq || '')}" autocomplete="off"></div>
     <div class="names" id="cust-names"></div>
-    <div class="chips" style="margin-top:10px">${['all', ...CUSTOMER_TYPES].map(k => `<button class="chip ${(state.filter.ctype || 'all') === k ? 'on' : ''}" data-act="cust-type" data-val="${k}">${k === 'all' ? 'Tất cả' : 'Khách ' + k.toLowerCase()}</button>`).join('')}</div>
+    <div class="fbar"><button class="fbtn ${(state.filter.ctype || 'all') !== 'all' ? 'on' : ''}" data-act="ctype-open"><span>Loại khách</span><b>${ctypeLabel(state.filter.ctype || 'all')}</b></button></div>
     <div class="block" style="margin-top:12px"><button class="btn ghost" style="margin-bottom:10px" data-act="add-customer">＋ Thêm khách</button><div class="group" id="cust-list"></div></div>`;
+}
+// Các lựa chọn lọc loại khách
+const CTYPES = [['all', 'Tất cả'], ['Sỉ', 'Khách sỉ'], ['Lẻ', 'Khách lẻ'], ['none', 'Chưa chọn loại']];
+const ctypeLabel = k => (CTYPES.find(x => x[0] === k) || CTYPES[0])[1];
+const ctypeMatch = (c, k) => k === 'all' || (k === 'none' ? !c.type : c.type === k);
+// Bảng chọn loại khách, kèm số khách mỗi loại
+function sheetCtype() {
+  const cur = state.filter.ctype || 'all';
+  openSheet(`<h3>Loại khách</h3><div class="opt-grid">${CTYPES.map(([k, l]) => `<button class="opt ${cur === k ? 'on' : ''}" data-act="cust-type" data-val="${k}"><b>${l}</b><span>${state.customers.filter(c => ctypeMatch(c, k)).length} khách</span></button>`).join('')}</div>`);
 }
 function renderCustomerList() {
   const q = (state.filter.cq || '').trim();
   const type = state.filter.ctype || 'all';
-  const list = state.customers.filter(c => (type === 'all' || c.type === type) && (!q || matchText(c.name + ' ' + c.channel + ' ' + c.phone + ' ' + c.address, q))).sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+  const list = state.customers.filter(c => ctypeMatch(c, type) && (!q || matchText(c.name + ' ' + c.channel + ' ' + c.phone + ' ' + c.address, q))).sort((a, b) => a.name.localeCompare(b.name, 'vi'));
   $('#cust-names').innerHTML = nameSuggest(q);
   $('#cust-list').innerHTML = list.map(c => {
     const gs = groupsOf(c), owe = gs.reduce((s, g) => s + groupOwed(g), 0);
@@ -632,16 +679,16 @@ function viewCustomer(v) {
   const total = gs.reduce((s, g) => s + groupTotal(g), 0), paid = gs.reduce((s, g) => s + groupPaid(g), 0);
   return topbar({ title: c.name, sub: `${c.type ? 'Khách ' + esc(c.type.toLowerCase()) + ' · ' : ''}${gs.length} đơn · ${gs.reduce((s, g) => s + groupDresses(g).length, 0)} váy · ${esc(c.channel)}${c.phone ? ' · ' + esc(c.phone) : ''}`, back: backLabel() }) +
     (gs.length ? moneyCard(gs.length > 1 ? 'Còn nợ tất cả các đơn' : 'Còn nợ', total, paid) : '') + `
-    <section class="block"><h2>Các đơn <small>${gs.length} đơn</small></h2><div class="group">${gs.map(g => orderRow(g, false)).join('') || '<div class="empty">Chưa có đơn</div>'}</div>
-      <button class="btn ghost" style="margin-top:10px" data-act="new-order-for" data-id="${c.id}">＋ Đơn mới cho ${esc(c.name)}</button></section>
-    <section class="block"><h2>Thông tin khách <small><button class="linkbtn" data-act="edit-customer" data-id="${c.id}" style="min-height:auto">Sửa</button></small></h2><div class="group">
+    <section class="block"><h2>Các đơn ${addBtn('new-order-for', '＋ Đơn mới', `data-id="${c.id}"`)}</h2>
+      <div class="group">${moreList(gs.map(g => orderRow(g, false)), 3, 'Xem thêm ' + (gs.length - 3) + ' đơn cũ hơn') || '<div class="empty">Chưa có đơn</div>'}</div></section>
+    ${disc('cust-info', 'Thông tin khách', esc([c.type ? 'Khách ' + c.type.toLowerCase() : '', c.ship || c.phone].filter(Boolean).join(' · ') || 'Chưa có thông tin'), `<div class="group">
       ${[['Loại khách', c.type ? 'Khách ' + c.type.toLowerCase() : 'Chưa chọn'], ['Kênh liên hệ', c.channel], ['Số điện thoại', c.phone || 'Chưa có'], ['Địa chỉ', c.address || 'Chưa có']]
         .map(([k, v]) => `<button class="kv" data-act="edit-customer" data-id="${c.id}"><span>${k}</span><span class="val">${esc(v)}</span></button>`).join('')}
       ${c.link ? `<a class="kv" href="${esc(linkHref(c.link))}" target="_blank" rel="noopener"><span>Facebook / Zalo</span><span class="val">Mở trang của khách ↗</span></a>`
         : `<button class="kv" data-act="edit-customer" data-id="${c.id}"><span>Facebook / Zalo</span><span class="val">Chưa có</span></button>`}
       ${[['Gửi hàng qua', c.ship || 'Chưa có'], ['Ghi chú', c.note || '—']]
         .map(([k, v]) => `<button class="kv" data-act="edit-customer" data-id="${c.id}"><span>${k}</span><span class="val">${esc(v)}</span></button>`).join('')}
-    </div></section>`;
+    </div>`, { add: addBtn('edit-customer', 'Sửa', `data-id="${c.id}"`) })}`;
 }
 // Link khách dán thiếu "https://" thì tự thêm để bấm mở được
 const linkHref = s => /^https?:\/\//i.test(s) ? s : 'https://' + s.replace(/^\/+/, '');
@@ -733,7 +780,7 @@ function viewStock() {
     <div class="search"><input class="field" id="stock-q" type="search" placeholder="Tìm theo size, kho, ghi chú…" value="${esc(f.q)}" autocomplete="off"></div>
     <div class="fbar">
       <button class="fbtn ${f.status !== 'all' ? 'on' : ''}" data-act="stock-filter" data-val="status"><span>Trạng thái</span><b>${f.status === 'all' ? 'Tất cả' : f.status}</b></button>
-      <button class="fbtn ${f.source !== 'all' ? 'on' : ''}" data-act="stock-filter" data-val="source"><span>Mua từ</span><b>${f.source === 'all' ? 'Tất cả' : esc(f.source)}</b></button>
+      <button class="fbtn ${f.source !== 'all' ? 'on' : ''}" data-act="stock-filter" data-val="source"><span>Kho</span><b>${f.source === 'all' ? 'Tất cả' : esc(f.source)}</b></button>
     </div>
     <div class="block" style="margin-top:12px"><button class="btn" data-act="stock-edit">＋ Thêm hàng mới</button></div>
     <div class="stock-grid" id="stock-grid"></div>`;
@@ -753,7 +800,7 @@ function sheetStockFilter(kind) {
   const opts = [['all', 'Tất cả'], ...(isS ? STOCK_STATUS : state.sources).map(s => [s, s])];
   const count = v => state.stock.filter(s => v === 'all' || (isS ? s.status === v : s.source === v)).length;
   const cur = isS ? f.status : f.source;
-  openSheet(`<h3>${isS ? 'Trạng thái hàng' : 'Mua từ đâu'}</h3><div class="opt-grid">${opts.map(([v, l]) => `<button class="opt ${String(cur) === String(v) ? 'on' : ''}" data-act="set-s${kind}" data-val="${esc(v)}"><b>${esc(l)}</b><span>${count(v)} váy</span></button>`).join('')}</div>`);
+  openSheet(`<h3>${isS ? 'Trạng thái hàng' : 'Kho'}</h3><div class="opt-grid">${opts.map(([v, l]) => `<button class="opt ${String(cur) === String(v) ? 'on' : ''}" data-act="set-s${kind}" data-val="${esc(v)}"><b>${esc(l)}</b><span>${count(v)} váy</span></button>`).join('')}</div>`);
 }
 // Bảng thêm/sửa 1 món hàng (ảnh gắn ngay khi chọn nếu đã có id; hàng mới thì gắn sau khi lưu)
 function sheetStock() {
@@ -763,7 +810,7 @@ function sheetStock() {
       <div class="col"><label class="lab" style="margin-top:0">Giá tiền</label>${moneyField('sp', t.sp)}</div></div>
     <div class="photo-btns"><label>Chụp ảnh<input type="file" accept="image/*" capture="environment" data-sphoto="1"></label><label>Chọn từ thư viện<input type="file" accept="image/*" data-sphoto="1"></label></div>
     <label class="lab">Size</label><div class="chips wrap">${SIZES.map(x => `<button class="chip ${t.size === x ? 'on' : ''}" data-act="ss-size" data-val="${x}">${x}</button>`).join('')}</div>
-    <label class="lab">Mua từ (kho)</label><div class="chips wrap">${state.sources.map(x => `<button class="chip ${t.source === x ? 'on' : ''}" data-act="ss-source" data-val="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+    <label class="lab">Kho</label><div class="chips wrap">${state.sources.map(x => `<button class="chip ${t.source === x ? 'on' : ''}" data-act="ss-source" data-val="${esc(x)}">${esc(x)}</button>`).join('')}</div>
     <label class="lab">Giá nhập</label>${moneyField('sc', t.sc)}
     <label class="lab">Ghi chú</label><textarea class="field" data-in="ss-note" placeholder="Màu, tình trạng, đã sửa gì…">${esc(t.note)}</textarea>
     ${t.id && t.status === 'Đã bán' ? `<p class="small-note">Đã bán${t.oid && orderById(t.oid) ? ' cho ' + esc(customerOf(orderById(t.oid)).name) : ''}. <button class="linkbtn" data-act="stock-unsell" style="min-height:auto">Đánh dấu còn sẵn</button></p>` : ''}
@@ -783,22 +830,21 @@ function sheetPickStock() {
    ===================================================================== */
 function viewSettings() {
   const c = Api.cfg(), t = state.tmp.cfg || (state.tmp.cfg = { url: c.url, key: c.key });
-  return topbar({ title: 'Cài đặt' }) + `
-    <section class="block"><h2>Kết nối Google Sheets</h2>
-      <label class="lab" style="margin-top:0">URL Web App</label><input class="field" data-in="cfg-url" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(t.url)}" autocomplete="off" spellcheck="false">
+  const conn = `<label class="lab" style="margin-top:0">URL Web App</label><input class="field" data-in="cfg-url" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(t.url)}" autocomplete="off" spellcheck="false">
       <label class="lab">Mã bí mật</label><input class="field" type="password" data-in="cfg-key" placeholder="Lấy từ Execution log khi chạy setup()" value="${esc(t.key)}" autocomplete="off">
       <button class="btn" style="margin-top:14px" data-act="cfg-save">Lưu và kiểm tra kết nối</button>
-      <p class="small-note">Cách lấy 2 thứ này: xem apps-script/README.md. Mã chỉ lưu trong máy này.</p></section>
-    <section class="block"><h2>Đồng bộ</h2>
-      <div class="group"><div class="kv" style="cursor:default"><span>Lần cuối</span><span class="val">${Sync.lastAt ? new Date(Sync.lastAt).toLocaleString('vi-VN') : 'Chưa'}</span></div>
+      <p class="small-note">Cách lấy 2 thứ này: xem apps-script/README.md. Mã chỉ lưu trong máy này.</p>`;
+  const sync = `<div class="group"><div class="kv" style="cursor:default"><span>Lần cuối</span><span class="val">${Sync.lastAt ? new Date(Sync.lastAt).toLocaleString('vi-VN') : 'Chưa'}</span></div>
       <div class="kv" style="cursor:default"><span>Thay đổi chờ gửi</span><span class="val ${Sync.pending ? 'owe' : 'ok'}">${Sync.pending}</span></div>
       ${Sync.error ? `<div class="kv" style="cursor:default"><span>Lỗi</span><span class="val owe">${esc(Sync.error)}</span></div>` : ''}</div>
       <button class="btn ghost" style="margin-top:10px" data-act="sync-now">Đồng bộ ngay</button>
-      <button class="btn ghost" style="margin-top:8px" data-act="resync">Đồng bộ lại toàn bộ (tải lại hết từ Sheets)</button>
-      <p class="small-note">"Đồng bộ lại toàn bộ" gửi hết thay đổi đang chờ trước, rồi xóa bản sao trong máy và tải lại. Dùng khi bạn sửa nhiều trên Sheets hoặc thấy số liệu lệch.</p></section>
-    <section class="block"><h2>Kho (nguồn váy)</h2>
-      <div class="group">${state.sourceRecs.map(r => `<div class="kv" style="cursor:default"><button class="linkbtn" style="justify-content:flex-start;color:var(--ink);font-weight:400" data-act="rename-source" data-id="${r.id}">${esc(r.ten)} <small style="color:var(--ink2);margin-left:6px">Đổi tên</small></button><button class="linkbtn danger" data-act="del-source" data-id="${r.id}">Xoá</button></div>`).join('') || '<div class="empty">Chưa có kho nào</div>'}</div>
-      <div style="display:flex;gap:8px;margin-top:10px"><input class="field" id="new-source" placeholder="Tên kho mới" autocomplete="off"><button class="btn small" data-act="add-source">Thêm</button></div></section>
+      ${disc('set-adv', 'Nâng cao', 'Tải lại hết từ Sheets', `<button class="btn ghost" data-act="resync">Đồng bộ lại toàn bộ (tải lại hết từ Sheets)</button>
+        <p class="small-note">"Đồng bộ lại toàn bộ" gửi hết thay đổi đang chờ trước, rồi xóa bản sao trong máy và tải lại. Dùng khi bạn sửa nhiều trên Sheets hoặc thấy số liệu lệch.</p>`, { sub: true })}`;
+  const kho = `<div class="group">${state.sourceRecs.map(r => `<div class="kv" style="cursor:default"><button class="linkbtn" style="justify-content:flex-start;color:var(--ink);font-weight:400" data-act="rename-source" data-id="${r.id}">${esc(r.ten)} <small style="color:var(--ink2);margin-left:6px">Đổi tên</small></button><button class="linkbtn danger" data-act="del-source" data-id="${r.id}">Xoá</button></div>`).join('') || '<div class="empty">Chưa có kho nào</div>'}</div>`;
+  return topbar({ title: 'Cài đặt' }) +
+    disc('set-conn', 'Kết nối Google Sheets', Api.ready() ? 'Đã kết nối' : 'Chưa kết nối', conn, { tone: Api.ready() ? 'ok' : 'owe', force: !Api.ready() }) +
+    disc('set-sync', 'Đồng bộ', Sync.pending ? Sync.pending + ' chờ gửi' : Sync.error ? 'Có lỗi' : 'Không có gì chờ gửi', sync, { open: true, tone: Sync.pending || Sync.error ? 'owe' : '' }) +
+    disc('set-kho', 'Kho', state.sourceRecs.length + ' kho', kho, { add: addBtn('add-source-open', '＋ Kho') }) + `
     <section class="block"><p class="small-note">Moon House · app ${APP_VERSION} · Apps Script ${state.serverVersion || (Api.ready() ? 'đang hỏi…' : 'chưa kết nối')} · ${state.groups.length} đơn (${state.orders.length} lần đặt), ${state.customers.length} khách, ${state.stock.length} hàng trong máy</p></section>`;
 }
 
@@ -806,10 +852,10 @@ function viewSettings() {
    4. THÊM ĐƠN NHANH (một trang cuộn, nút Lưu dính đáy)
    ===================================================================== */
 const newDress = prev => ({ price: 0, size: prev ? prev.size : '', source: prev ? prev.source : '', cost: 0, note: '', img: null, blob: null, stockId: null, stockImgId: '' });
-// Bắt đầu nhập đơn; từ chi tiết đơn bấm "Thêm lần đặt mới" thì khách và đơn đích đã chọn sẵn
+// Bắt đầu nhập đơn; mặc định tạo đơn mới riêng. Từ chi tiết đơn bấm "Thêm lần đặt mới" thì khách và đơn đích đã chọn sẵn
 function startDraft(g, cust) {
-  const c = cust || (g && customerOf(g)), open = cust ? openGroupsOf(cust.id) : [];
-  state.draft = { cid: c ? c.id : null, name: c ? c.name : '', channel: c ? c.channel : 'Fb', target: g ? g.id : open.length ? open[0].id : null, dresses: [newDress()], deposit: 0, due: '', note: '', date: toIso(TODAY) };
+  const c = cust || (g && customerOf(g));
+  state.draft = { cid: c ? c.id : null, name: c ? c.name : '', channel: c ? c.channel : 'Fb', target: g ? g.id : null, dresses: [newDress()], deposit: 0, due: '', note: '', date: toIso(TODAY), openDress: 0 };
   navDir = 'push'; state.stack.push({ v: 'new' }); render();
 }
 // Các đơn còn váy chưa giao của khách đang chọn, mới nhất trước
@@ -831,11 +877,11 @@ function viewNew() {
       <p class="small-note">Tự lấy ngày hôm nay, chạm vào để chọn ngày khác</p></section>
     <section class="block"><h2>Váy <small id="dress-count"></small></h2><div class="group" id="dress-forms"></div>
       <div style="display:flex;gap:8px;margin-top:10px"><button class="btn ghost" data-act="add-dress">＋ Thêm váy nữa</button><button class="btn ghost" data-act="pick-stock-open">Chọn từ hàng sẵn</button></div></section>
-    <section class="block"><h2>${g ? 'Cọc và hạn giao lần này' : 'Cọc và hạn giao'}</h2>
+    ${disc('draft-dep', g ? 'Cọc và hạn giao lần này' : 'Cọc và hạn giao', d.deposit ? 'Cọc ' + money(d.deposit) : 'Chưa cọc', `
       <label class="lab" style="margin-top:0">Cọc</label>${moneyField('dep', d.deposit)}
       <div class="chips wrap" style="margin-top:8px"><button class="chip" data-act="pay-60" id="chip-60">60%</button><button class="chip" data-act="pay-full">Đã thanh toán đủ</button></div>
       <label class="lab">${g ? 'Hạn giao lần này' : 'Hạn giao (không bắt buộc)'}</label><input class="field" type="date" data-in="draft-due" value="${d.due}">
-      <label class="lab">${g ? 'Ghi chú lần này' : 'Note đơn'}</label><textarea class="field" data-in="draft-note" placeholder="${g ? 'Ví dụ: cả lần này đuôi dài 1m' : 'Ví dụ: Trước 5/8, khách báo qua Fb'}">${esc(d.note)}</textarea></section>
+      <label class="lab">${g ? 'Ghi chú lần này' : 'Note đơn'}</label><textarea class="field" data-in="draft-note" placeholder="${g ? 'Ví dụ: cả lần này đuôi dài 1m' : 'Ví dụ: Trước 5/8, khách báo qua Fb'}">${esc(d.note)}</textarea>`, { open: true, sumId: 'dep-sum' })}
     <div class="savebar"><div class="sumline"><span id="sum-left"></span><span id="sum-right"></span></div>
       <button class="btn" id="save-order" data-act="save-order">Lưu đơn</button></div>`;
 }
@@ -849,8 +895,9 @@ function renderCustomerSuggest() {
     const all = openGroupsOf(d.cid), open = all.slice(0, 3);
     const chosen = d.target && groupById(d.target);
     if (chosen && !open.includes(chosen)) open.push(chosen);
-    if (open.length || d.target) html += `<div class="choose">${open.map(g => `<button class="pick ${d.target === g.id ? 'on' : ''}" data-act="draft-target" data-val="${g.id}"><i></i><span><b>Thêm vào đơn đang mở, thành lần ${g.lans.length + 1}</b>Đơn ${groupDateLabel(g)} · ${g.lans.length} lần · ${groupDresses(g).length} váy · còn ${money(groupOwed(g))}</span></button>`).join('')}
-      <button class="pick ${d.target ? '' : 'on'}" data-act="draft-target" data-val=""><i></i><span><b>Tạo đơn mới riêng</b>Cho đợt đặt khác, theo dõi tách biệt</span></button></div>`;
+    // Mặc định "Tạo đơn mới riêng"; các đơn đang mở nằm trong một dòng xổ xuống bên dưới
+    if (open.length) html += `<div class="choose"><button class="pick ${d.target ? '' : 'on'}" data-act="draft-target" data-val=""><i></i><span><b>Tạo đơn mới riêng</b>Cho đợt đặt này, theo dõi tách biệt</span></button></div>`
+      + disc('draft-join', 'Hoặc thêm vào đơn đang mở', open.length + ' đơn', `<div class="choose" style="margin-top:0">${open.map(g => `<button class="pick ${d.target === g.id ? 'on' : ''}" data-act="draft-target" data-val="${g.id}"><i></i><span><b>Thêm vào đơn ${groupDateLabel(g)}, thành lần ${g.lans.length + 1}</b>${g.lans.length} lần · ${groupDresses(g).length} váy · còn ${money(groupOwed(g))}</span></button>`).join('')}</div>`, { sub: true, force: !!d.target });
   }
   else if (q) {
     const found = state.customers.filter(c => matchText(c.name, q)).slice(0, 4);
@@ -861,11 +908,15 @@ function renderCustomerSuggest() {
   }
   $('#cust-sugg').innerHTML = html;
 }
+// Váy trong đơn đang nhập: chỉ váy đang nhập mở đầy đủ, váy khác thu thành một dòng tóm tắt, chạm để sửa
 function renderDressForms() {
-  const d = state.draft;
-  $('#dress-forms').innerHTML = d.dresses.map((dr, i) => `
-    <div class="dform">
-      <div class="head"><b>Váy ${i + 1}${dr.stockId ? ' <span class="tag">Hàng sẵn</span>' : ''}</b>${d.dresses.length > 1 ? `<button class="linkbtn danger" data-act="del-dress" data-i="${i}">Xoá</button>` : ''}</div>
+  const d = state.draft, many = d.dresses.length > 1;
+  $('#dress-forms').innerHTML = d.dresses.map((dr, i) => i !== d.openDress
+    ? `<button class="dsum" data-act="dress-open" data-i="${i}">${tile({ img: dr.img, tone: '#F3E4E8' })}
+        <div class="main"><b>Váy ${i + 1} · ${dr.price ? money(dr.price) : 'chưa có giá'}</b><span>${[dr.size, dr.source, (dr.note || '').trim(), dr.img ? 'có ảnh' : 'chưa có ảnh'].filter(Boolean).map(esc).join(' · ')}</span></div>
+        <span class="ed">Sửa${CHEV}</span></button>`
+    : `<div class="dform">
+      <div class="head"><b>Váy ${i + 1}${dr.stockId ? ' <span class="tag">Hàng sẵn</span>' : ''}</b>${many ? `<span><button class="linkbtn danger" data-act="del-dress" data-i="${i}">Xoá</button><button class="linkbtn" data-act="dress-open" data-i="-1">Thu gọn</button></span>` : ''}</div>
       <div class="photo-row">
         <div class="tile xl ${dr.img ? '' : 'nopic'}" style="${dr.img ? `background-image:url(${dr.img})` : '--tone:#F3E4E8'}">${dr.img ? '' : NOPIC + 'Chưa có ảnh'}</div>
         <div class="col"><label class="lab" style="margin-top:0">Giá tiền</label>${moneyField('dp' + i, dr.price)}</div>
@@ -894,6 +945,7 @@ function refreshDraftSummary() {
   $('#sum-right').innerHTML = g ? `Cả đơn còn <b>${money(groupOwed(g) + rest)}</b>` : `Còn lại <b>${money(rest)}</b>`;
   const c60 = $('#chip-60'); if (c60) c60.textContent = '60%' + (total ? ' = ' + money(Math.round(total * 0.6 / 1000) * 1000) : '');
   const full = document.querySelector('[data-kfull="dep"]'); if (full) full.textContent = depositNote();
+  const ds = $('#dep-sum'); if (ds) ds.textContent = d.deposit ? 'Cọc ' + money(d.deposit) : 'Chưa cọc';
   const btn = $('#save-order'); btn.disabled = !ready;
   btn.textContent = dup ? 'Tên khách đã có: chọn khách ở trên hoặc đổi tên' : !ready ? 'Nhập tên khách và giá ít nhất 1 váy' : g ? `Lưu lần ${lan} · ${d.dresses.length} váy` : `Lưu đơn · ${d.dresses.length} váy`;
 }
@@ -1072,11 +1124,10 @@ const push = v => { navDir = 'push'; state.stack.push(v); render(); };
 const REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches;
 function enterScreen(viewName) {
   if (REDUCE) return;
-  const dir = navDir === 'back' ? -1 : 1, tilt = navDir === 'tab' ? 0 : 9 * dir, shift = navDir === 'tab' ? 0 : 34 * dir;
-  [...$('#view').children].filter(el => !el.classList.contains('savebar')).forEach((el, i) => {
-    el.animate([{ opacity: 0, transform: `perspective(900px) translate3d(${shift}px,14px,-40px) rotateY(${-tilt}deg)` }, { opacity: 1, transform: 'none' }],
-      { duration: 460, delay: Math.min(i, 8) * 45, easing: 'cubic-bezier(.2,.9,.3,1.05)', fill: 'backwards' });
-  });
+  const shift = navDir === 'tab' ? 0 : navDir === 'back' ? -16 : 16;
+  // Từng khối chạy cùng lúc; bỏ qua thanh đáy cố định (đặt hiệu ứng lên cha sẽ làm thanh đáy nhảy)
+  [...$('#view').children].filter(el => !el.classList.contains('savebar')).forEach(el =>
+    el.animate([{ opacity: 0, transform: `translateX(${shift}px)` }, { opacity: 1, transform: 'none' }], { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)' }));
   if (viewName === 'today') countUp($('#owed-num'));
 }
 function countUp(el) {
@@ -1094,16 +1145,23 @@ document.addEventListener('pointerdown', e => {
   w.className = 'ripple'; w.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX - r.left - size / 2}px;top:${e.clientY - r.top - size / 2}px`;
   host.appendChild(w); setTimeout(() => w.remove(), 650);
 });
-// Thẻ "tilt" nghiêng theo ngón tay
-document.addEventListener('pointermove', e => {
-  const el = e.target.closest('.tilt'); if (!el) return;
-  const r = el.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
-  el.style.transform = `perspective(700px) rotateX(${(-y * 7).toFixed(2)}deg) rotateY(${(x * 9).toFixed(2)}deg)`;
-});
-['pointerup', 'pointercancel', 'pointerout'].forEach(ev => document.addEventListener(ev, e => {
-  const el = e.target.closest && e.target.closest('.tilt');
-  if (el && !(e.relatedTarget && el.contains(e.relatedTarget))) el.style.transform = '';
-}));
+/* ---------- Giữ cửa sổ đứng yên trên điện thoại (nhất là khi cài app ra màn hình chính) ---------- */
+// Bàn phím hiện lên: đặt bảng trượt ngay trên bàn phím, thay vì để iPhone đẩy cả màn đi
+if (window.visualViewport) {
+  const vv = window.visualViewport, fit = () => {
+    document.documentElement.style.setProperty('--kb', Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + 'px');
+    document.documentElement.style.setProperty('--vvh', vv.height + 'px');
+  };
+  vv.addEventListener('resize', fit); vv.addEventListener('scroll', fit); fit();
+}
+// Đang gõ chữ trong vùng sel?
+const typingIn = sel => { const a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest(sel)); };
+// Tắt bàn phím xong: kéo trang về đúng chỗ (iPhone hay để lệch), rồi vẽ lại màn nếu đã hoãn trong lúc gõ
+document.addEventListener('focusout', () => setTimeout(() => {
+  if (typingIn('body')) return;
+  if (window.scrollY || document.documentElement.scrollTop) window.scrollTo(0, 0);
+  if (state.renderLater) { state.renderLater = false; if (!sheetOpen() && topView().v !== 'new') render(true); }
+}, 80));
 
 /* =====================================================================
    SỰ KIỆN BẤM (gom một chỗ)
@@ -1221,7 +1279,11 @@ document.addEventListener('click', async e => {
       case 'add-lan': startDraft(groupById(id)); break;
       case 'new-order-for': startDraft(null, state.customers.find(x => x.id === id)); break;
       case 'merge-open': sheetMerge(groupById(id)); break;
-      case 'dview': state.dsnap.mode = val === 'need' || val === 'input' ? val : +val; render(true); break;
+      case 'dview-open': sheetDview(groupById(id)); break;
+      case 'dview': closeSheet(); state.dsnap.mode = val === 'need' || val === 'input' ? val : +val; render(true); break;
+      case 'disc': { const on = el.closest('.disc').classList.toggle('open'); el.setAttribute('aria-expanded', on); DISC[val] = on;
+        try { localStorage.setItem('mh_disc', JSON.stringify(DISC)); } catch (err) {} break; }         // không lưu được thì lần sau về mặc định, không sao
+      case 'more': { const box = el.previousElementSibling; box.hidden = !box.hidden; el.textContent = box.hidden ? val : 'Thu gọn'; break; }
       case 'done-toggle': { const s = state.dsnap.open; s.has(id) ? s.delete(id) : s.add(id); render(true); break; }
       case 'sel-start': state.dsnap.sel = new Set(); render(true); break;
       case 'sel-cancel': state.dsnap.sel = null; render(true); break;
@@ -1249,7 +1311,8 @@ document.addEventListener('click', async e => {
         state.tmp = { cid: c.id, name: c.name, channel: c.channel, phone: c.phone, note: c.note, type: c.type, address: c.address, link: c.link, ship: c.ship }; sheetCustomer(); break; }
       case 'cu-channel': state.tmp.channel = val; sheetCustomer(); break;
       case 'cu-type': state.tmp.type = state.tmp.type === val ? '' : val; sheetCustomer(); break;       // chạm lần nữa để bỏ chọn
-      case 'cust-type': state.filter.ctype = val; render(true); break;
+      case 'ctype-open': sheetCtype(); break;
+      case 'cust-type': state.filter.ctype = val; closeSheet(); render(true); break;
       case 'save-customer': { const t = state.tmp; if (!t.name.trim()) { toast('Nhập tên'); break; }
         if (sameNameCustomer(t.name, t.cid)) { toast('Đã có khách khác tên “' + t.name.trim() + '”, thêm chữ để phân biệt'); break; }
         const rec = { ten: t.name.trim(), kenh: t.channel, sdt: t.phone.trim(), ghiChu: t.note.trim(), loaiKhach: t.type, diaChi: t.address.trim(), lienKet: t.link.trim(), guiQua: t.ship.trim() };
@@ -1286,11 +1349,12 @@ document.addEventListener('click', async e => {
       case 'pick-stock': { const st = state.stock.find(x => x.id === id), last = d.dresses[d.dresses.length - 1];
         const dr = { price: st.price, size: st.size, source: st.source, cost: st.cost || 0, note: st.note, img: st.img, blob: null, stockId: st.id, stockImgId: st.anhId };
         if (last && !last.price && !last.img) d.dresses[d.dresses.length - 1] = dr; else d.dresses.push(dr);
+        d.openDress = d.dresses.indexOf(dr);
         closeSheet(); renderDressForms(); toast('Đã đưa hàng sẵn vào đơn'); break; }
 
       /* Thêm đơn */
       case 'pick-customer': { const c = state.customers.find(x => x.id === id); d.cid = c.id; d.name = c.name; d.channel = c.channel;
-        const open = openGroupsOf(c.id); d.target = open.length ? open[0].id : null;          // mặc định thêm vào đơn đang mở mới nhất
+        d.target = null;                                   // mặc định tạo đơn mới riêng; muốn gộp thì chọn trong "Hoặc thêm vào đơn đang mở"
         render(true); break; }
       case 'draft-target': d.target = val || null; render(true); break;
       case 'pay-60': { const v = Math.round(draftTotal() * 0.6 / 1000) * 1000; if (!v) { toast('Nhập giá váy trước'); break; }
@@ -1298,9 +1362,11 @@ document.addEventListener('click', async e => {
       case 'draft-channel': d.channel = val; renderCustomerSuggest(); break;
       case 'draft-size': d.dresses[i].size = val; renderDressForms(); break;
       case 'draft-source': d.dresses[i].source = val; renderDressForms(); break;
-      case 'add-dress': d.dresses.push(newDress(d.dresses[d.dresses.length - 1])); renderDressForms();
+      case 'dress-open': d.openDress = i; renderDressForms();
+        if (i >= 0) setTimeout(() => { const f = $('.dform'); if (f) f.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 0); break;
+      case 'add-dress': d.dresses.push(newDress(d.dresses[d.dresses.length - 1])); d.openDress = d.dresses.length - 1; renderDressForms();
         setTimeout(() => { const f = $$('.dform'); f[f.length - 1].scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 0); break;
-      case 'del-dress': d.dresses.splice(i, 1); renderDressForms(); break;
+      case 'del-dress': d.dresses.splice(i, 1); d.openDress = Math.max(0, i - 1); renderDressForms(); break;
       case 'pay-full': { const total = d.dresses.reduce((s, x) => s + x.price, 0); d.deposit = total; document.querySelector('[data-k="dep"]').value = Math.round(total / 1000); setMoney('dep', total); break; }
       case 'save-order': await saveDraft(); break;
 
@@ -1312,11 +1378,13 @@ document.addEventListener('click', async e => {
       case 'resync': { if (!Api.ready()) { toast('Chưa có URL và mã'); break; }
         if (!confirm('Tải lại toàn bộ từ Sheets? Thay đổi đang chờ sẽ được gửi trước.')) break;
         toast('Đang gửi thay đổi chờ…');
-        try { await Sync.push(); } catch (err) { toast('Không gửi được: ' + err.message); break; }
+        try { await Sync.pushData(); } catch (err) { toast('Không gửi được: ' + err.message); break; }
         toast('Đang tải lại…');                                   // tải xong mới thay bản trong máy; lỗi thì giữ nguyên
         if (await Sync.run(true, true)) { await loadModel(); render(true); toast('Đã tải lại từ Sheets'); } else { render(true); toast('Không tải được, dữ liệu trong máy giữ nguyên. ' + Sync.error); } break; }
+      case 'add-source-open': openSheet(`<h3>Thêm kho</h3><label class="lab">Tên kho</label><input class="field" id="new-source" placeholder="Ví dụ: Chị Hằng" autocomplete="off">
+          <button class="btn" style="margin-top:16px" data-act="add-source">Thêm kho</button>`); break;
       case 'add-source': { const v = $('#new-source').value.trim(); if (!v) break; if (state.sources.some(s => norm(s) === norm(v))) { toast('Đã có kho này'); break; }
-        await save('Nguon', { id: uid('ng'), ten: v, thuTu: state.sourceRecs.length + 1 }); await commit(true, 'Đã thêm kho'); break; }
+        await save('Nguon', { id: uid('ng'), ten: v, thuTu: state.sourceRecs.length + 1 }); closeSheet(); await commit(true, 'Đã thêm kho'); break; }
       case 'del-source': if (confirm('Xoá kho này khỏi danh sách? Váy đã ghi kho này vẫn giữ tên.')) { await remove('Nguon', id); await commit(true); } break;
       case 'rename-source': { const r = state.sourceRecs.find(x => x.id === id); state.tmp = { srcId: id };
         openSheet(`<h3>Đổi tên kho</h3><label class="lab">Tên mới</label><input class="field" id="src-name" value="${esc(r.ten)}" autocomplete="off">
@@ -1405,7 +1473,11 @@ document.addEventListener('change', async e => {
   // Trạng thái đồng bộ đổi → cập nhật viên; có dữ liệu mới về → vẽ lại nếu không đang nhập
   Sync.onChange(async s => {
     refreshSyncPill();
-    if (s.changed && !s.busy && topView().v !== 'new' && !sheetOpen()) { await loadModel(); render(true); }
+    if (s.changed && !s.busy && topView().v !== 'new' && !sheetOpen()) {
+      s.changed = false;
+      await loadModel();
+      if (typingIn('#view')) state.renderLater = true; else render(true);    // đang gõ thì chưa vẽ lại, tránh mất chữ và bàn phím tự tắt
+    }
   });
   Sync.start();
   if (Api.ready()) Sync.run(!Sync.lastAt);
