@@ -36,6 +36,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
+const APP_VERSION = '1.2';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -56,7 +57,8 @@ const state = {
   cal: { month: new Date(TODAY.getFullYear(), TODAY.getMonth(), 1), sel: TODAY },
   draft: null,       // đơn đang nhập ở luồng Thêm đơn
   tmp: {},           // dữ liệu tạm cho các bảng trượt
-  imgUrls: {}        // id dòng → URL tạm của ảnh đang chờ gửi
+  imgUrls: {},       // id dòng → URL tạm của ảnh đang chờ gửi
+  serverVersion: ''  // phiên bản Code.gs bên Google, hỏi khi mở Cài đặt
 };
 
 /* =====================================================================
@@ -670,7 +672,7 @@ function viewSettings() {
     <section class="block"><h2>Kho (nguồn váy)</h2>
       <div class="group">${state.sourceRecs.map(r => `<div class="kv" style="cursor:default"><span style="color:var(--ink)">${esc(r.ten)}</span><button class="linkbtn danger" data-act="del-source" data-id="${r.id}">Xoá</button></div>`).join('') || '<div class="empty">Chưa có kho nào</div>'}</div>
       <div style="display:flex;gap:8px;margin-top:10px"><input class="field" id="new-source" placeholder="Tên kho mới" autocomplete="off"><button class="btn small" data-act="add-source">Thêm</button></div></section>
-    <section class="block"><p class="small-note">Moon House · phiên bản 1.0 · ${state.orders.length} đơn, ${state.customers.length} khách, ${state.stock.length} hàng trong máy</p></section>`;
+    <section class="block"><p class="small-note">Moon House · app ${APP_VERSION} · Apps Script ${state.serverVersion || (Api.ready() ? 'đang hỏi…' : 'chưa kết nối')} · ${state.groups.length} đơn (${state.orders.length} lần đặt), ${state.customers.length} khách, ${state.stock.length} hàng trong máy</p></section>`;
 }
 
 /* =====================================================================
@@ -919,6 +921,9 @@ function render(keepScroll) {
   if (topView().v === 'customers') renderCustomerList();
   if (topView().v === 'stock') renderStockGrid();
   if (topView().v === 'new') { renderCustomerSuggest(); renderDressForms(); }
+  // Mở Cài đặt lần đầu: hỏi máy chủ phiên bản Code.gs để hiện ở cuối trang
+  if (topView().v === 'settings' && Api.ready() && !state.serverVersion)
+    Api.get('ping').then(r => { state.serverVersion = r.version || '?'; if (topView().v === 'settings') render(true); }).catch(() => {});
   $('#app').scrollTop = keepScroll ? y : 0;
   if (!keepScroll) enterScreen(topView().v);
   navDir = 'tab';
@@ -1109,7 +1114,7 @@ document.addEventListener('click', async e => {
       /* Cài đặt */
       case 'cfg-save': { const t = state.tmp.cfg; if (!t.url || !t.key) { toast('Nhập cả URL và mã bí mật'); break; }
         Api.save(t.url, t.key); toast('Đang kiểm tra…');
-        try { const r = await Api.get('ping'); toast('Kết nối OK: ' + r.sheet); Sync.error = ''; await Sync.run(!(await Store.metaGet('lastSync'))); await loadModel(); render(true); }
+        try { const r = await Api.get('ping'); state.serverVersion = r.version || ''; toast('Kết nối OK: ' + r.sheet + ' · Apps Script ' + r.version); Sync.error = ''; await Sync.run(!(await Store.metaGet('lastSync'))); await loadModel(); render(true); }
         catch (err) { toast('Không kết nối được: ' + err.message); render(true); } break; }
       case 'resync': { if (!Api.ready()) { toast('Chưa có URL và mã'); break; }
         if (!confirm('Tải lại toàn bộ từ Sheets? Thay đổi đang chờ sẽ được gửi trước.')) break;
