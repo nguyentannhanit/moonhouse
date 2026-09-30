@@ -39,12 +39,14 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.3';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.4';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
 const CHANNELS = ['Fb', 'Zalo', 'Khác'];
 const APPT_KINDS = ['Thử váy', 'Báo khách', 'Ngày cưới', 'Khác'];
+const PAY_KINDS = ['Cọc', 'Thanh toán', 'Thanh toán đủ'];
+const CUSTOMER_TYPES = ['Sỉ', 'Lẻ'];
 const STOCK_STATUS = ['Sẵn', 'Đã bán'];
 const TONES = ['#EBD9DE', '#E6D6E0', '#F1DDD3', '#DDE3DA', '#EDE4D8', '#E3D8E8', '#F3D9DF', '#D9E1E4'];
 const NOPIC = '<svg viewBox="0 0 24 24"><path d="M8.6 2.6c.9 2 2 3 3.4 3s2.5-1 3.4-3l1.3 5.6c-1.5.9-3.1 1.3-4.7 1.3s-3.2-.4-4.7-1.3z"/><path d="M7.3 8.9C5.6 12.4 4.4 16.1 3.9 19.9c2.6.9 5.3 1.4 8.1 1.4s5.5-.5 8.1-1.4c-.5-3.8-1.7-7.5-3.4-11-1.5.9-3.1 1.3-4.7 1.3s-3.2-.4-4.7-1.3z"/></svg>';
@@ -95,7 +97,8 @@ async function loadModel() {
 
   state.sourceRecs = tabs.Nguon.sort((a, b) => (+a.thuTu || 0) - (+b.thuTu || 0));
   state.sources = state.sourceRecs.map(r => r.ten).filter(Boolean);
-  state.customers = tabs.KhachHang.map(r => ({ id: r.id, name: r.ten || '(chưa có tên)', channel: r.kenh || 'Khác', phone: r.sdt || '', note: r.ghiChu || '' }));
+  state.customers = tabs.KhachHang.map(r => ({ id: r.id, name: r.ten || '(chưa có tên)', channel: r.kenh || 'Khác', phone: r.sdt || '', note: r.ghiChu || '',
+    type: r.loaiKhach || '', address: r.diaChi || '', link: r.lienKet || '', ship: r.guiQua || '' }));
   const dr = groupBy(tabs.ChiTietDon, 'donHangId'), py = groupBy(tabs.ThanhToan, 'donHangId'), ap = groupBy(tabs.LichHen, 'donHangId');
   state.orders = tabs.DonHang.map(r => ({
     id: r.id, gid: r.donChungId || r.id, cid: r.khachId, date: fromIso(r.ngayDat), due: fromIso(r.hanGiao), note: r.note || '', sheetGoc: r.sheetGoc || '',
@@ -439,7 +442,7 @@ const dueText = d => { const n = daysTo(d); return n < 0 ? 'quá ' + -n + ' ngà
 // Lịch hẹn của cả đơn
 function apptSection(g) {
   const appts = g.lans.flatMap(o => o.appts.map(a => Object.assign({ oid: o.id }, a))).sort((a, b) => a.date - b.date).map(a => { const n = daysTo(a.date);
-    return `<button class="kv" data-act="del-appt" data-id="${a.oid}" data-aid="${a.id}"><span style="display:flex;align-items:center;gap:8px"><i class="dot" style="background:${evColor(a)}"></i>${esc(a.kind)}${a.note ? ' · ' + esc(a.note) : ''}</span><b>${dm(a.date)}${n < 0 ? '' : ` <span class="tag ${n <= 2 ? 'soon' : ''}">${dueText(a.date)}</span>`}</b></button>`; }).join('');
+    return `<button class="kv" data-act="edit-appt" data-aid="${a.id}"><span style="display:flex;align-items:center;gap:8px"><i class="dot" style="background:${evColor(a)}"></i>${esc(a.kind)}${a.note ? ' · ' + esc(a.note) : ''}</span><b>${dm(a.date)}${n < 0 ? '' : ` <span class="tag ${n <= 2 ? 'soon' : ''}">${dueText(a.date)}</span>`}</b></button>`; }).join('');
   return `<section class="block"><h2>Lịch hẹn</h2><div class="group">${appts || '<div class="empty">Chưa có lịch hẹn</div>'}</div>
     <button class="btn ghost" style="margin-top:10px" data-act="add-appt" data-id="${g.lans[0].id}">＋ Thêm lịch hẹn</button></section>`;
 }
@@ -447,26 +450,28 @@ function apptSection(g) {
 function groupFooter(g) {
   const others = groupsOf(customerOf(g)).filter(x => x.id !== g.id).length;
   return `<section class="block"><button class="btn ghost" data-act="add-lan" data-id="${g.id}">＋ Thêm lần đặt mới</button>
-    <div style="display:flex;justify-content:space-between;gap:10px;margin-top:8px">
-      ${others ? `<button class="linkbtn" data-act="merge-open" data-id="${g.id}" style="justify-content:flex-start">Gộp với đơn khác</button>` : '<span></span>'}
+    <div style="display:flex;justify-content:space-between;gap:10px;margin-top:8px"><span style="display:flex;gap:14px">
+      ${others ? `<button class="linkbtn" data-act="merge-open" data-id="${g.id}" style="justify-content:flex-start">Gộp với đơn khác</button>` : ''}
+      <button class="linkbtn" data-act="change-cust" data-id="${g.id}" style="justify-content:flex-start">Đổi khách</button></span>
       <button class="linkbtn danger" data-act="del-order" data-id="${g.id}">Xoá ${g.lans.length > 1 ? 'cả đơn' : 'đơn này'}</button></div></section>`;
 }
 // Đơn chỉ có một lần: bố cục như trước
 function viewSingle(g, o) {
   const c = customerOf(o);
-  const dresses = o.dresses.map((d, i) => `
-    <div class="dcard">
+  const dresses = dressList(g, o, (d, i, sel) => `
+    <div class="dcard${sel ? ' picked' : ''}">
       <button data-act="view-img" data-id="${o.id}" data-i="${i}" aria-label="Xem ảnh váy ${i + 1}">${tile(d, 'lg')}</button>
-      <button class="info" data-act="edit-dress" data-id="${o.id}" data-i="${i}">
+      <button class="info" data-act="${sel == null ? 'edit-dress' : 'sel-toggle'}" data-did="${d.id}" data-id="${o.id}" data-i="${i}">
         <div class="price">${money(d.price)}</div>
         <div class="meta">${esc(d.size || 'Chưa có size')} · ${esc(d.source || 'Chưa có kho')}</div>
         <div class="cost">${d.cost ? 'Giá nhập ' + money(d.cost) : 'Chưa ghi giá nhập'}</div>
         ${dayTag(d, o)}
         ${d.note ? `<span class="dnote">${esc(d.note)}</span>` : '<span class="dnote empty">＋ Ghi chú váy</span>'}
       </button>
-      <button class="moonbtn" data-act="cycle" data-id="${o.id}" data-i="${i}" aria-label="Đổi trạng thái váy ${i + 1}">${moon(d.status)}${STATUS[d.status]}</button>
-    </div>`).join('');
-  const pays = o.pays.map(p => `<button class="kv" data-act="del-pay" data-id="${o.id}" data-pid="${p.id}"><span>${dm(p.date)} · ${esc(p.kind)}</span><b>${money(p.amount)}</b></button>`).join('');
+      ${sel == null ? `<button class="moonbtn" data-act="cycle" data-id="${o.id}" data-i="${i}" aria-label="Đổi trạng thái váy ${i + 1}">${moon(d.status)}${STATUS[d.status]}</button>`
+        : `<button class="moonbtn" data-act="sel-toggle" data-did="${d.id}" aria-label="Chọn váy ${i + 1}"><i class="check ${sel ? 'on' : ''}"></i>${STATUS[d.status]}</button>`}
+    </div>`);
+  const pays = o.pays.map(p => `<button class="kv" data-act="edit-pay" data-id="${o.id}" data-pid="${p.id}"><span>${dm(p.date)} · ${esc(p.kind)}</span><b>${money(p.amount)}</b></button>`).join('');
   const dueTag = o.due ? ` <span class="tag ${daysTo(o.due) < 0 ? 'late' : daysTo(o.due) <= 2 ? 'soon' : ''}">${dueText(o.due)}</span>` : '';
   return topbar({ title: c.name, sub: `${o.date ? 'Đặt ' + dm(o.date) : 'Chưa có ngày đặt'} · ${esc(c.channel)}${o.sheetGoc ? ' · từ sheet ' + esc(o.sheetGoc) : ''}`, back: backLabel() }) +
     moneyCard('Còn lại', orderTotal(o), orderPaid(o)) + `
@@ -476,13 +481,57 @@ function viewSingle(g, o) {
     </div></section>
     ${apptSection(g)}
     <section class="block"><h2>Váy trong đơn <small>${o.dresses.length} váy</small></h2><p class="sub" style="margin:-4px 0 10px">Chạm trăng để đổi trạng thái · chạm ảnh để xem to · chạm chữ để sửa</p>
-      <div class="group">${dresses || '<div class="empty">Đơn chưa có váy</div>'}</div>
+      ${dressTools(g)}<div class="group">${dresses || '<div class="empty">Đơn chưa có váy</div>'}</div>
       <button class="btn ghost" style="margin-top:10px" data-act="add-dress-to-order" data-id="${o.id}">＋ Thêm váy vào đơn</button></section>
     <section class="block"><h2>Thanh toán</h2><div class="group">${pays || '<div class="empty">Chưa có khoản nào</div>'}</div>
       <button class="btn ghost" style="margin-top:10px" data-act="add-pay" data-id="${o.id}">＋ Thêm thanh toán</button></section>
     <section class="block"><h2>Note đơn</h2><textarea class="field" data-in="order-note" data-id="${o.id}" placeholder="Ví dụ: Trước 5/8, khách báo qua Fb">${esc(o.note)}</textarea>
       ${o.dresses.some(d => d.noteGoc) ? `<p class="small-note">Note gốc từ Excel: ${o.dresses.map(d => d.noteGoc).filter(Boolean).map(esc).join(' · ')}</p>` : ''}</section>
-    ${groupFooter(g)}`;
+    ${groupFooter(g)}${selBar(g)}`;
+}
+// Trạng thái váy chụp lúc mở đơn: váy vừa đổi trạng thái nằm yên chỗ cũ đến khi rời đơn, chạm nhầm còn sửa ngay được
+function snapOf(g) {
+  const v = topView();
+  if (!state.dsnap || state.dsnap.view !== v) state.dsnap = { view: v, st: {}, mode: 'need', open: new Set(), sel: null };
+  groupDresses(g).forEach(d => { if (!(d.id in state.dsnap.st)) state.dsnap.st[d.id] = d.status; });
+  return state.dsnap;
+}
+// Thứ tự váy một lần: "Cần giao trước" = Đã về → Đặt, váy đã giao tách riêng; hoặc giữ thứ tự nhập; hoặc chỉ một trạng thái
+function dressPlan(s, o) {
+  const items = o.dresses.map((d, i) => ({ d, i, st: s.st[d.id] }));
+  if (s.mode === 'input') return { show: items, done: [] };
+  if (s.mode !== 'need') return { show: items.filter(x => x.st === s.mode), done: [] };
+  const RANK = [1, 0, 2];                                             // Đặt xếp sau Đã về
+  const open = items.filter(x => x.st < 2).sort((a, b) => RANK[a.st] - RANK[b.st] || a.i - b.i), done = items.filter(x => x.st === 2);
+  return open.length ? { show: open, done } : { show: done, done: [] };   // lần đã giao hết thì hiện bình thường, không gom
+}
+// Vẽ váy của một lần; váy đã giao gom vào một dòng ở cuối, chạm để mở ra
+function dressList(g, o, row) {
+  const s = snapOf(g), plan = dressPlan(s, o), pick = d => s.sel ? s.sel.has(d.id) : null;
+  let html = plan.show.map(x => row(x.d, x.i, pick(x.d))).join('');
+  if (plan.done.length) {
+    const open = s.open.has(o.id);
+    html += `<button class="done-row" data-act="done-toggle" data-id="${o.id}">${moon(2)}<span>Đã giao ${plan.done.length} váy</span><b>${open ? 'Thu gọn' : 'Xem'}</b></button>`
+      + (open ? plan.done.map(x => row(x.d, x.i, pick(x.d))).join('') : '');
+  }
+  return html || (o.dresses.length ? `<div class="empty">Không có váy ${STATUS[s.mode]} ở đây</div>` : '');
+}
+// Hàng lọc váy + nút Chọn nhiều; chỉ hiện ở đơn từ 5 váy trở lên
+function dressTools(g) {
+  const s = snapOf(g), all = groupDresses(g);
+  if (all.length < 5) return '';
+  const cnt = k => all.filter(d => d.status === k).length;
+  const opts = [['need', 'Cần giao trước'], ['input', 'Thứ tự nhập'], [1, 'Đã về ' + cnt(1)], [0, 'Đặt ' + cnt(0)], [2, 'Đã giao ' + cnt(2)]];
+  return `<div class="dtools-bar"><span>Xem theo</span><button class="linkbtn" data-act="${s.sel ? 'sel-cancel' : 'sel-start'}">${s.sel ? 'Thôi chọn' : 'Chọn nhiều váy'}</button></div>
+    <div class="chips dtools">${opts.map(([k, l]) => `<button class="chip ${s.mode === k ? 'on' : ''}" data-act="dview" data-val="${k}">${l}</button>`).join('')}</div>`;
+}
+// Thanh đáy khi đang chọn nhiều: đổi cả loạt váy đã chọn sang một trạng thái
+function selBar(g) {
+  const s = snapOf(g);
+  if (!s.sel) return '';
+  return `<div style="height:150px"></div><div class="savebar"><div class="sumline"><span>Đã chọn <b>${s.sel.size}</b> váy</span>
+      <span><button class="linkbtn" style="min-height:auto" data-act="sel-all">Chọn hết đang hiện</button> · <button class="linkbtn" style="min-height:auto" data-act="sel-cancel">Huỷ</button></span></div>
+    <div class="selset">${STATUS.map((t, k) => `<button class="btn ${k === 2 ? '' : 'ghost'}" data-act="sel-set" data-val="${k}" ${s.sel.size ? '' : 'disabled'}>${t}</button>`).join('')}</div></div>`;
 }
 // Một khung "Lần n": ngày, cọc và tỷ lệ, hạn, tiền riêng, ghi chú, váy, nút
 function lanCard(o) {
@@ -490,10 +539,11 @@ function lanCard(o) {
   const payFact = dep ? `<span class="fact coc">Cọc ${money(dep)} · ${t ? Math.round(dep / t * 100) : 0}%</span>`
     : p && p >= t ? '<span class="fact ok">Đã thu đủ</span>' : p ? `<span class="fact coc">Đã thu ${money(p)}</span>` : '<span class="fact">Chưa cọc</span>';
   const dueFact = o.due ? `<span class="fact ${daysTo(o.due) <= 7 && o.dresses.some(d => d.status < 2) ? 'soon' : ''}">Hạn ${dm(o.due)} · ${dueText(o.due)}</span>` : '<span class="fact">Chưa hẹn giao</span>';
-  const rows = o.dresses.map((d, i) => `<div class="mini">
+  const rows = dressList(groupById(o.gid), o, (d, i, sel) => `<div class="mini${sel ? ' picked' : ''}">
       <button data-act="view-img" data-id="${o.id}" data-i="${i}" aria-label="Xem ảnh váy">${tile(d)}</button>
-      <button class="info" data-act="edit-dress" data-id="${o.id}" data-i="${i}"><b>${money(d.price)}</b>${esc(d.size || '—')} · ${esc(d.source || '—')}${d.note ? ' · ' + esc(d.note) : ''}<br>${dayTag(d, o)}</button>
-      <button class="st" data-act="cycle" data-id="${o.id}" data-i="${i}" aria-label="Đổi trạng thái">${moon(d.status)}${STATUS[d.status]}</button></div>`).join('');
+      <button class="info" data-act="${sel == null ? 'edit-dress' : 'sel-toggle'}" data-did="${d.id}" data-id="${o.id}" data-i="${i}"><b>${money(d.price)}</b>${esc(d.size || '—')} · ${esc(d.source || '—')}${d.note ? ' · ' + esc(d.note) : ''}<br>${dayTag(d, o)}</button>
+      ${sel == null ? `<button class="st" data-act="cycle" data-id="${o.id}" data-i="${i}" aria-label="Đổi trạng thái">${moon(d.status)}${STATUS[d.status]}</button>`
+        : `<button class="st" data-act="sel-toggle" data-did="${d.id}" aria-label="Chọn váy"><i class="check ${sel ? 'on' : ''}"></i>${STATUS[d.status]}</button>`}</div>`);
   return `<div class="lan">
     <div class="lan-head">
       <div class="lan-title"><b>Lần ${o.lanNo} · đặt ${dateLabel(o.date)}</b><span>${o.dresses.length} váy</span></div>
@@ -509,13 +559,13 @@ function lanCard(o) {
 function viewGroup(g) {
   const c = customerOf(g);
   const pays = g.lans.flatMap(o => o.pays.map(p => ({ o, p }))).sort((a, b) => a.p.date - b.p.date)
-    .map(({ o, p }) => `<button class="kv" data-act="del-pay" data-id="${o.id}" data-pid="${p.id}"><span>${dm(p.date)} · ${esc(p.kind)} · lần ${o.lanNo}</span><b>${money(p.amount)}</b></button>`).join('');
+    .map(({ o, p }) => `<button class="kv" data-act="edit-pay" data-id="${o.id}" data-pid="${p.id}"><span>${dm(p.date)} · ${esc(p.kind)} · lần ${o.lanNo}</span><b>${money(p.amount)}</b></button>`).join('');
   return topbar({ title: c.name, sub: `${g.lans.length} lần đặt · ${groupDresses(g).length} váy · ${esc(c.channel)}`, back: backLabel() }) +
     moneyCard('Còn lại cả đơn', groupTotal(g), groupPaid(g)) + `
-    <section class="block"><p class="sub" style="margin:0 0 10px">Chạm trăng để đổi trạng thái · chạm ảnh để xem to · chạm chữ để sửa</p>${g.lans.map(lanCard).join('')}</section>
+    <section class="block"><p class="sub" style="margin:0 0 10px">Chạm trăng để đổi trạng thái · chạm ảnh để xem to · chạm chữ để sửa</p>${dressTools(g)}${g.lans.map(lanCard).join('')}</section>
     ${apptSection(g)}
-    <section class="block"><h2>Các lần thu tiền</h2><div class="group">${pays || '<div class="empty">Chưa có khoản nào</div>'}</div><p class="small-note">Chạm vào một khoản để xoá.</p></section>
-    ${groupFooter(g)}`;
+    <section class="block"><h2>Các lần thu tiền</h2><div class="group">${pays || '<div class="empty">Chưa có khoản nào</div>'}</div><p class="small-note">Chạm vào một khoản để sửa hoặc xoá.</p></section>
+    ${groupFooter(g)}${selBar(g)}`;
 }
 // Bảng sửa một lần: ngày đặt, hạn giao, ghi chú; tách ra đơn riêng; xoá lần
 function sheetLan() {
@@ -560,16 +610,18 @@ function viewCustomers() {
   return topbar({ title: 'Khách hàng', sub: state.customers.length + ' khách' }) + dupBanner() + `
     <div class="search"><input class="field" id="cust-search" type="search" placeholder="Gõ vài chữ, không cần dấu…" value="${esc(state.filter.cq || '')}" autocomplete="off"></div>
     <div class="names" id="cust-names"></div>
-    <div class="block" style="margin-top:12px"><div class="group" id="cust-list"></div></div>`;
+    <div class="chips" style="margin-top:10px">${['all', ...CUSTOMER_TYPES].map(k => `<button class="chip ${(state.filter.ctype || 'all') === k ? 'on' : ''}" data-act="cust-type" data-val="${k}">${k === 'all' ? 'Tất cả' : 'Khách ' + k.toLowerCase()}</button>`).join('')}</div>
+    <div class="block" style="margin-top:12px"><button class="btn ghost" style="margin-bottom:10px" data-act="add-customer">＋ Thêm khách</button><div class="group" id="cust-list"></div></div>`;
 }
 function renderCustomerList() {
   const q = (state.filter.cq || '').trim();
-  const list = state.customers.filter(c => !q || matchText(c.name + ' ' + c.channel + ' ' + c.phone, q)).sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+  const type = state.filter.ctype || 'all';
+  const list = state.customers.filter(c => (type === 'all' || c.type === type) && (!q || matchText(c.name + ' ' + c.channel + ' ' + c.phone + ' ' + c.address, q))).sort((a, b) => a.name.localeCompare(b.name, 'vi'));
   $('#cust-names').innerHTML = nameSuggest(q);
   $('#cust-list').innerHTML = list.map(c => {
     const gs = groupsOf(c), owe = gs.reduce((s, g) => s + groupOwed(g), 0);
     return `<button class="row" data-act="open-customer" data-id="${c.id}">
-      <div class="main"><b>${esc(c.name)}</b><span>${esc(c.channel)}${c.phone ? ' · ' + esc(c.phone) : ''} · ${gs.length} đơn · ${gs.reduce((s, g) => s + groupDresses(g).length, 0)} váy</span></div>
+      <div class="main"><b>${esc(c.name)}${c.type ? ` <span class="tag">${esc(c.type)}</span>` : ''}</b><span>${esc(c.channel)}${c.phone ? ' · ' + esc(c.phone) : ''} · ${gs.length} đơn · ${gs.reduce((s, g) => s + groupDresses(g).length, 0)} váy</span></div>
       <div class="side">${owe > 0 ? `<b class="owe">${money(owe)}</b><span class="muted">còn nợ</span>` : ''}</div></button>`;
   }).join('') || '<div class="empty">Chưa có khách nào</div>';
 }
@@ -578,25 +630,52 @@ function viewCustomer(v) {
   if (!c) { state.stack.pop(); return viewCustomers(); }
   const gs = groupsOf(c).sort((a, b) => cmpDate(a.last, b.last, -1));
   const total = gs.reduce((s, g) => s + groupTotal(g), 0), paid = gs.reduce((s, g) => s + groupPaid(g), 0);
-  return topbar({ title: c.name, sub: `${gs.length} đơn · ${gs.reduce((s, g) => s + groupDresses(g).length, 0)} váy · ${esc(c.channel)}${c.phone ? ' · ' + esc(c.phone) : ''}`, back: backLabel() }) +
+  return topbar({ title: c.name, sub: `${c.type ? 'Khách ' + esc(c.type.toLowerCase()) + ' · ' : ''}${gs.length} đơn · ${gs.reduce((s, g) => s + groupDresses(g).length, 0)} váy · ${esc(c.channel)}${c.phone ? ' · ' + esc(c.phone) : ''}`, back: backLabel() }) +
     (gs.length ? moneyCard(gs.length > 1 ? 'Còn nợ tất cả các đơn' : 'Còn nợ', total, paid) : '') + `
     <section class="block"><h2>Các đơn <small>${gs.length} đơn</small></h2><div class="group">${gs.map(g => orderRow(g, false)).join('') || '<div class="empty">Chưa có đơn</div>'}</div>
       <button class="btn ghost" style="margin-top:10px" data-act="new-order-for" data-id="${c.id}">＋ Đơn mới cho ${esc(c.name)}</button></section>
-    <section class="block"><h2>Thông tin khách</h2><div class="group">
-      <button class="kv" data-act="edit-customer" data-id="${c.id}"><span>Kênh liên hệ</span><span class="val">${esc(c.channel)}</span></button>
-      <button class="kv" data-act="edit-customer" data-id="${c.id}"><span>Số điện thoại</span><span class="val">${esc(c.phone) || 'Chưa có'}</span></button>
-      <button class="kv" data-act="edit-customer" data-id="${c.id}"><span>Ghi chú</span><span class="val">${esc(c.note) || '—'}</span></button>
+    <section class="block"><h2>Thông tin khách <small><button class="linkbtn" data-act="edit-customer" data-id="${c.id}" style="min-height:auto">Sửa</button></small></h2><div class="group">
+      ${[['Loại khách', c.type ? 'Khách ' + c.type.toLowerCase() : 'Chưa chọn'], ['Kênh liên hệ', c.channel], ['Số điện thoại', c.phone || 'Chưa có'], ['Địa chỉ', c.address || 'Chưa có']]
+        .map(([k, v]) => `<button class="kv" data-act="edit-customer" data-id="${c.id}"><span>${k}</span><span class="val">${esc(v)}</span></button>`).join('')}
+      ${c.link ? `<a class="kv" href="${esc(linkHref(c.link))}" target="_blank" rel="noopener"><span>Facebook / Zalo</span><span class="val">Mở trang của khách ↗</span></a>`
+        : `<button class="kv" data-act="edit-customer" data-id="${c.id}"><span>Facebook / Zalo</span><span class="val">Chưa có</span></button>`}
+      ${[['Gửi hàng qua', c.ship || 'Chưa có'], ['Ghi chú', c.note || '—']]
+        .map(([k, v]) => `<button class="kv" data-act="edit-customer" data-id="${c.id}"><span>${k}</span><span class="val">${esc(v)}</span></button>`).join('')}
     </div></section>`;
 }
-// Bảng sửa khách: tên, kênh, số điện thoại, ghi chú
+// Link khách dán thiếu "https://" thì tự thêm để bấm mở được
+const linkHref = s => /^https?:\/\//i.test(s) ? s : 'https://' + s.replace(/^\/+/, '');
+// Khách trống cho bảng Thêm khách
+function blankCustomer() {
+  return { cid: null, name: '', channel: 'Fb', phone: '', note: '', type: '', address: '', link: '', ship: '' };
+}
+// Bảng thêm / sửa khách; khách chưa có đơn nào thì xoá được ở đây
 function sheetCustomer() {
-  const t = state.tmp;
-  openSheet(`<h3>Sửa khách</h3>
+  const t = state.tmp, adding = !t.cid;
+  openSheet(`<h3>${adding ? 'Thêm khách' : 'Sửa khách'}</h3>
     <label class="lab">Tên</label><input class="field" data-in="cu-name" value="${esc(t.name)}" autocomplete="off">
+    <label class="lab">Loại khách</label><div class="chips wrap">${CUSTOMER_TYPES.map(k => `<button class="chip ${t.type === k ? 'on' : ''}" data-act="cu-type" data-val="${k}">Khách ${k.toLowerCase()}</button>`).join('')}</div>
     <label class="lab">Kênh liên hệ</label><div class="chips wrap">${CHANNELS.map(ch => `<button class="chip ${t.channel === ch ? 'on' : ''}" data-act="cu-channel" data-val="${ch}">${ch}</button>`).join('')}</div>
     <label class="lab">Số điện thoại</label><input class="field" data-in="cu-phone" inputmode="tel" value="${esc(t.phone)}" autocomplete="off">
+    <label class="lab">Địa chỉ giao hàng</label><textarea class="field" data-in="cu-address" placeholder="Số nhà, đường, phường, tỉnh">${esc(t.address)}</textarea>
+    <label class="lab">Link Facebook / Zalo</label><input class="field" data-in="cu-link" inputmode="url" placeholder="Dán link trang cá nhân của khách" value="${esc(t.link)}" autocomplete="off" spellcheck="false">
+    <label class="lab">Gửi hàng qua</label><input class="field" data-in="cu-ship" placeholder="Ví dụ: Nhà xe Phương Trang" value="${esc(t.ship)}" autocomplete="off">
     <label class="lab">Ghi chú</label><textarea class="field" data-in="cu-note">${esc(t.note)}</textarea>
-    <button class="btn" style="margin-top:16px" data-act="save-customer">Lưu</button>`);
+    <button class="btn" style="margin-top:16px" data-act="save-customer">${adding ? 'Thêm khách' : 'Lưu'}</button>
+    ${adding ? '' : `<button class="linkbtn danger" style="margin-top:6px;justify-content:center;width:100%" data-act="del-customer">Xoá khách này</button>`}`);
+}
+// Bảng đổi khách của một đơn: gõ tên để lọc, chạm khách để chuyển cả đơn sang
+function sheetChangeCustomer() {
+  const g = groupById(state.tmp.gid);
+  openSheet(`<h3>Đổi khách của đơn</h3><p class="sub" style="margin:0">Đang là ${esc(customerOf(g).name)} · ${g.lans.length} lần đặt · ${groupDresses(g).length} váy</p>
+    <input class="field" style="margin-top:12px" data-in="cc-q" placeholder="Gõ tên khách mới…" value="${esc(state.tmp.q)}" autocomplete="off">
+    <div class="group" id="cc-list" style="margin-top:10px">${changeCustomerRows()}</div>`);
+}
+function changeCustomerRows() {
+  const g = groupById(state.tmp.gid), q = state.tmp.q.trim();
+  const list = state.customers.filter(c => c.id !== g.cid && (!q || matchText(c.name + ' ' + c.phone, q))).sort((a, b) => a.name.localeCompare(b.name, 'vi')).slice(0, 30);
+  return list.map(c => `<button class="row" data-act="change-cust-to" data-id="${c.id}"><div class="main"><b>${esc(c.name)}</b><span>${esc(c.channel)} · ${groupsOf(c).length} đơn</span></div></button>`).join('')
+    || '<div class="empty">Không có khách nào khớp. Muốn khách mới thì thêm ở mục Khách hàng trước.</div>';
 }
 
 /* =====================================================================
@@ -622,15 +701,27 @@ function viewCalendar() {
       <div class="group">${dayEvs.map(eventRow).join('') || '<div class="empty">Không có gì trong ngày này</div>'}</div>
       ${state.orders.length ? `<button class="btn ghost" style="margin-top:10px" data-act="add-appt" data-iso="${toIso(sel)}">＋ Thêm lịch hẹn ngày ${dm(sel)}</button>` : ''}</section>`;
 }
-// Bảng thêm lịch hẹn
+// Bảng thêm / sửa một lần thu tiền; khi sửa thì đổi được loại và xoá được
+function sheetPay() {
+  const t = state.tmp, o = orderById(t.oid);
+  openSheet(`<h3>${t.pid ? 'Sửa thanh toán' : 'Thêm thanh toán'}</h3><p class="sub" style="margin-bottom:0">Còn lại ${money(orderOwed(o))}</p>
+    <label class="lab">Số tiền</label>${moneyField('pay', t.pay)}
+    ${t.pid ? `<label class="lab">Loại</label><div class="chips wrap">${PAY_KINDS.map(k => `<button class="chip ${t.kind === k ? 'on' : ''}" data-act="pay-kind" data-val="${k}">${k}</button>`).join('')}</div>`
+      : '<div class="chips wrap" style="margin-top:8px"><button class="chip" data-act="pay-rest">Thu đủ phần còn lại</button></div>'}
+    <label class="lab">Ngày</label><input class="field" type="date" data-in="pay-date" value="${t.payDate}">
+    <button class="btn" style="margin-top:16px" data-act="save-pay">Lưu</button>
+    ${t.pid ? `<button class="linkbtn danger" style="margin-top:6px;justify-content:center;width:100%" data-act="del-pay" data-pid="${t.pid}">Xoá khoản này</button>` : ''}`);
+}
+// Bảng thêm / sửa lịch hẹn
 function sheetAppt() {
   const t = state.tmp, o = orderById(t.oid);
-  openSheet(`<h3>Thêm lịch hẹn</h3>
+  openSheet(`<h3>${t.aid ? 'Sửa lịch hẹn' : 'Thêm lịch hẹn'}</h3>
     ${t.lock ? `<p class="sub" style="margin:0">${esc(customerOf(o).name)}</p>` : `<label class="lab">Đơn của khách</label><select class="field" data-in="ap-oid">${state.orders.slice().sort((a, b) => cmpDate(a.date, b.date, -1)).map(x => `<option value="${x.id}" ${x.id === t.oid ? 'selected' : ''}>${esc(customerOf(x).name + lanTag(x))} · đặt ${dateLabel(x.date)}</option>`).join('')}</select>`}
     <label class="lab">Loại</label><div class="chips wrap">${APPT_KINDS.map(k => `<button class="chip ${t.kind === k ? 'on' : ''}" data-act="ap-kind" data-val="${k}">${k}</button>`).join('')}</div>
     <label class="lab">Ngày</label><input class="field" type="date" data-in="ap-date" value="${t.date}">
     <label class="lab">Ghi chú</label><input class="field" data-in="ap-note" value="${esc(t.note)}" placeholder="Ví dụ: thử lần 2, mang giày, 15h" autocomplete="off">
-    <button class="btn" style="margin-top:16px" data-act="save-appt">Lưu lịch hẹn</button>`);
+    <button class="btn" style="margin-top:16px" data-act="save-appt">Lưu lịch hẹn</button>
+    ${t.aid ? `<button class="linkbtn danger" style="margin-top:6px;justify-content:center;width:100%" data-act="del-appt" data-aid="${t.aid}">Xoá lịch hẹn này</button>` : ''}`);
 }
 
 /* =====================================================================
@@ -706,7 +797,7 @@ function viewSettings() {
       <button class="btn ghost" style="margin-top:8px" data-act="resync">Đồng bộ lại toàn bộ (tải lại hết từ Sheets)</button>
       <p class="small-note">"Đồng bộ lại toàn bộ" gửi hết thay đổi đang chờ trước, rồi xóa bản sao trong máy và tải lại. Dùng khi bạn sửa nhiều trên Sheets hoặc thấy số liệu lệch.</p></section>
     <section class="block"><h2>Kho (nguồn váy)</h2>
-      <div class="group">${state.sourceRecs.map(r => `<div class="kv" style="cursor:default"><span style="color:var(--ink)">${esc(r.ten)}</span><button class="linkbtn danger" data-act="del-source" data-id="${r.id}">Xoá</button></div>`).join('') || '<div class="empty">Chưa có kho nào</div>'}</div>
+      <div class="group">${state.sourceRecs.map(r => `<div class="kv" style="cursor:default"><button class="linkbtn" style="justify-content:flex-start;color:var(--ink);font-weight:400" data-act="rename-source" data-id="${r.id}">${esc(r.ten)} <small style="color:var(--ink2);margin-left:6px">Đổi tên</small></button><button class="linkbtn danger" data-act="del-source" data-id="${r.id}">Xoá</button></div>`).join('') || '<div class="empty">Chưa có kho nào</div>'}</div>
       <div style="display:flex;gap:8px;margin-top:10px"><input class="field" id="new-source" placeholder="Tên kho mới" autocomplete="off"><button class="btn small" data-act="add-source">Thêm</button></div></section>
     <section class="block"><p class="small-note">Moon House · app ${APP_VERSION} · Apps Script ${state.serverVersion || (Api.ready() ? 'đang hỏi…' : 'chưa kết nối')} · ${state.groups.length} đơn (${state.orders.length} lần đặt), ${state.customers.length} khách, ${state.stock.length} hàng trong máy</p></section>`;
 }
@@ -718,7 +809,7 @@ const newDress = prev => ({ price: 0, size: prev ? prev.size : '', source: prev 
 // Bắt đầu nhập đơn; từ chi tiết đơn bấm "Thêm lần đặt mới" thì khách và đơn đích đã chọn sẵn
 function startDraft(g, cust) {
   const c = cust || (g && customerOf(g)), open = cust ? openGroupsOf(cust.id) : [];
-  state.draft = { cid: c ? c.id : null, name: c ? c.name : '', channel: c ? c.channel : 'Fb', target: g ? g.id : open.length ? open[0].id : null, dresses: [newDress()], deposit: 0, due: '', note: '' };
+  state.draft = { cid: c ? c.id : null, name: c ? c.name : '', channel: c ? c.channel : 'Fb', target: g ? g.id : open.length ? open[0].id : null, dresses: [newDress()], deposit: 0, due: '', note: '', date: toIso(TODAY) };
   navDir = 'push'; state.stack.push({ v: 'new' }); render();
 }
 // Các đơn còn váy chưa giao của khách đang chọn, mới nhất trước
@@ -735,7 +826,9 @@ function viewNew() {
   return topbar({ title: g ? 'Lần đặt mới' : 'Đơn mới' }).replace('<header class="top">', '<header class="top"><button class="back" data-act="cancel-new"><b>‹</b> Huỷ</button>') + `
     <section class="block" style="margin-top:8px"><h2>Khách</h2>
       <input class="field" id="cust-q" placeholder="Gõ tên khách…" value="${esc(d.name)}" autocomplete="off">
-      <div id="cust-sugg" class="sugg"></div></section>
+      <div id="cust-sugg" class="sugg"></div>
+      <label class="lab">${g ? 'Ngày đặt lần này' : 'Ngày đặt'}</label><input class="field" type="date" data-in="draft-date" value="${d.date}">
+      <p class="small-note">Tự lấy ngày hôm nay, chạm vào để chọn ngày khác</p></section>
     <section class="block"><h2>Váy <small id="dress-count"></small></h2><div class="group" id="dress-forms"></div>
       <div style="display:flex;gap:8px;margin-top:10px"><button class="btn ghost" data-act="add-dress">＋ Thêm váy nữa</button><button class="btn ghost" data-act="pick-stock-open">Chọn từ hàng sẵn</button></div></section>
     <section class="block"><h2>${g ? 'Cọc và hạn giao lần này' : 'Cọc và hạn giao'}</h2>
@@ -811,18 +904,18 @@ async function saveDraft() {
   let cid = d.cid;
   if (!cid && sameNameCustomer(d.name)) { toast('Đã có khách tên này, chọn khách ở danh sách gợi ý'); btn.disabled = false; refreshDraftSummary(); return; }
   if (!cid) { cid = uid('kh'); await save('KhachHang', { id: cid, ten: d.name.trim(), kenh: d.channel, sdt: '', ghiChu: '' }); }
-  const oid = uid('dh');
-  await save('DonHang', { id: oid, khachId: cid, ngayDat: toIso(TODAY), hanGiao: d.due || '', note: d.note.trim(), sheetGoc: '', donChungId: d.target || '' });
+  const oid = uid('dh'), day = d.date || toIso(TODAY);                 // ô ngày bị xoá trống thì lấy hôm nay
+  await save('DonHang', { id: oid, khachId: cid, ngayDat: day, hanGiao: d.due || '', note: d.note.trim(), sheetGoc: '', donChungId: d.target || '' });
   const dresses = d.dresses.filter(x => x.price > 0);
   let thuTu = 0, total = 0;
   for (const x of dresses) {
     const id = uid('ct'); thuTu++; total += x.price;
     await save('ChiTietDon', { id, donHangId: oid, thuTu, giaTien: x.price, giaNhap: x.cost || '', size: x.size, kho: x.source, anhId: x.stockImgId || '',
-      ghiChuVay: x.note.trim(), trangThai: x.stockId ? 'Đã về' : 'Đặt', hangHoaId: x.stockId || '', noteGoc: '', ngayThem: toIso(TODAY) });
+      ghiChuVay: x.note.trim(), trangThai: x.stockId ? 'Đã về' : 'Đặt', hangHoaId: x.stockId || '', noteGoc: '', ngayThem: day });
     if (x.blob) { await Store.imagePut(id, x.blob); state.imgUrls[id] = x.img; await Store.outboxAdd({ kind: 'image', tab: 'ChiTietDon', id }); }
     if (x.stockId) await upd('HangHoa', x.stockId, { trangThai: 'Đã bán', donHangId: oid });
   }
-  if (d.deposit > 0) await save('ThanhToan', { id: uid('tt'), donHangId: oid, ngay: toIso(TODAY), soTien: d.deposit, loai: d.deposit >= total ? 'Thanh toán đủ' : 'Cọc' });
+  if (d.deposit > 0) await save('ThanhToan', { id: uid('tt'), donHangId: oid, ngay: day, soTien: d.deposit, loai: d.deposit >= total ? 'Thanh toán đủ' : 'Cọc' });
   state.draft = null; state.stack.pop(); state.stack.push({ v: 'order', id: d.target || oid });
   navDir = 'push';
   await commit(false, (d.target ? 'Đã lưu lần đặt mới' : 'Đã lưu đơn') + (Api.ready() ? ' · đang gửi lên Sheets' : ''));
@@ -959,8 +1052,9 @@ let navDir = 'tab';
 function render(keepScroll) {
   const y = $('#app').scrollTop, v = topView();
   const map = { today: viewToday, orders: viewOrders, order: viewOrder, customers: viewCustomers, customer: viewCustomer, settings: viewSettings, new: viewNew, calendar: viewCalendar, stock: viewStock };
+  if (v.v !== 'order') state.dsnap = null;                          // rời đơn: lần sau mở lại xếp theo trạng thái mới
   $('#view').innerHTML = map[v.v](v);
-  $('#fab').style.display = v.v === 'new' ? 'none' : 'grid';
+  $('#fab').style.display = v.v === 'new' || (state.dsnap && state.dsnap.sel) ? 'none' : 'grid';
   if (topView().v === 'orders') renderOrderList();
   if (topView().v === 'customers') renderCustomerList();
   if (topView().v === 'stock') renderStockGrid();
@@ -1053,10 +1147,13 @@ document.addEventListener('click', async e => {
         const latest = state.orders.slice().sort((a, b) => cmpDate(a.date, b.date, -1))[0];
         state.tmp = { oid: id || latest.id, lock: !!id, kind: 'Thử váy', date: el.dataset.iso || toIso(TODAY), note: '' }; sheetAppt(); break; }
       case 'ap-kind': state.tmp.kind = val; sheetAppt(); break;
+      case 'edit-appt': { const o = state.orders.find(x => x.appts.some(a => a.id === el.dataset.aid)), a = o.appts.find(x => x.id === el.dataset.aid);
+        state.tmp = { oid: o.id, aid: a.id, lock: true, kind: a.kind, date: toIso(a.date), note: a.note }; sheetAppt(); break; }
       case 'save-appt': { const t = state.tmp; if (!t.date) { toast('Chọn ngày'); break; }
-        await save('LichHen', { id: uid('lh'), donHangId: t.oid, ngay: t.date, loai: t.kind, ghiChu: t.note.trim() });
-        closeSheet(); await commit(true, 'Đã thêm lịch hẹn'); break; }
-      case 'del-appt': if (confirm('Xoá lịch hẹn này?')) { await remove('LichHen', el.dataset.aid); await commit(true, 'Đã xoá lịch hẹn'); } break;
+        if (t.aid) await upd('LichHen', t.aid, { ngay: t.date, loai: t.kind, ghiChu: t.note.trim() });
+        else await save('LichHen', { id: uid('lh'), donHangId: t.oid, ngay: t.date, loai: t.kind, ghiChu: t.note.trim() });
+        closeSheet(); await commit(true, t.aid ? 'Đã lưu lịch hẹn' : 'Đã thêm lịch hẹn'); break; }
+      case 'del-appt': if (confirm('Xoá lịch hẹn này?')) { await remove('LichHen', el.dataset.aid); closeSheet(); await commit(true, 'Đã xoá lịch hẹn'); } break;
 
       /* Chi tiết đơn */
       case 'cycle': { const o = order(), dr = o.dresses[i]; await upd('ChiTietDon', dr.id, { trangThai: STATUS[(dr.status + 1) % 3] }); await commit(true); popMoon(o.id, i); break; }
@@ -1082,18 +1179,17 @@ document.addEventListener('click', async e => {
       case 'add-dress-to-order': { const o = order(), last = o.dresses[o.dresses.length - 1];   // mở bảng Thêm váy, ngày tự lấy hôm nay
         state.tmp = { oid: o.id, did: null, i: o.dresses.length, ep: 0, ec: 0, size: last ? last.size : '', source: last ? last.source : '', note: '', date: toIso(TODAY), file: null, img: null };
         sheetDress(); break; }
-      case 'add-pay': { const o = order(); state.tmp = { oid: o.id, pay: 0 };
-        openSheet(`<h3>Thêm thanh toán</h3><p class="sub" style="margin-bottom:0">Còn lại ${money(orderOwed(o))}</p>
-          <label class="lab">Số tiền</label>${moneyField('pay', 0)}
-          <div class="chips wrap" style="margin-top:8px"><button class="chip" data-act="pay-rest">Thu đủ phần còn lại</button></div>
-          <label class="lab">Ngày</label><input class="field" type="date" data-in="pay-date" value="${toIso(TODAY)}">
-          <button class="btn" style="margin-top:16px" data-act="save-pay">Lưu</button>`); break; }
+      case 'add-pay': state.tmp = { oid: order().id, pay: 0, payDate: toIso(TODAY) }; sheetPay(); break;
+      case 'edit-pay': { const o = orderById(id), p = o.pays.find(x => x.id === el.dataset.pid);
+        state.tmp = { oid: o.id, pid: p.id, pay: p.amount, payDate: toIso(p.date), kind: p.kind }; sheetPay(); break; }
+      case 'pay-kind': state.tmp.kind = val; sheetPay(); break;
       case 'pay-rest': { const v = orderOwed(orderById(state.tmp.oid)); state.tmp.pay = v; document.querySelector('[data-k="pay"]').value = Math.round(v / 1000); setMoney('pay', v); break; }
       case 'save-pay': { const o = orderById(state.tmp.oid), amt = state.tmp.pay || 0;
         if (!amt) { toast('Nhập số tiền'); break; }
+        if (state.tmp.pid) { await upd('ThanhToan', state.tmp.pid, { soTien: amt, ngay: state.tmp.payDate || toIso(TODAY), loai: state.tmp.kind }); closeSheet(); await commit(true, 'Đã lưu thanh toán'); break; }
         await save('ThanhToan', { id: uid('tt'), donHangId: o.id, ngay: state.tmp.payDate || toIso(TODAY), soTien: amt, loai: amt >= orderOwed(o) ? 'Thanh toán đủ' : (o.pays.length ? 'Thanh toán' : 'Cọc') });
         closeSheet(); await commit(true, 'Đã thêm thanh toán'); break; }
-      case 'del-pay': if (confirm('Xoá khoản thanh toán này?')) { await remove('ThanhToan', el.dataset.pid); await commit(true, 'Đã xoá'); } break;
+      case 'del-pay': if (confirm('Xoá khoản thanh toán này?')) { await remove('ThanhToan', el.dataset.pid); closeSheet(); await commit(true, 'Đã xoá'); } break;
       /* Lần đặt: sửa ngày / hạn / ghi chú, tách, xoá; đơn: thêm lần, gộp, xoá */
       case 'edit-lan': { const o = order(); state.tmp = { oid: o.id, date: o.date ? toIso(o.date) : '', due: o.due ? toIso(o.due) : '', note: o.note }; sheetLan(); break; }
       case 'lan-clear-due': state.tmp.due = ''; sheetLan(); break;
@@ -1116,6 +1212,7 @@ document.addEventListener('click', async e => {
             const fill = {};
             if (!keep.phone && c.phone) fill.sdt = c.phone;
             if (!keep.note && c.note) fill.ghiChu = c.note;
+            [['type', 'loaiKhach'], ['address', 'diaChi'], ['link', 'lienKet'], ['ship', 'guiQua']].forEach(([k, col]) => { if (!keep[k] && c[k]) { fill[col] = c[k]; keep[k] = c[k]; } });
             if (Object.keys(fill).length) { await upd('KhachHang', keep.id, fill); Object.assign(keep, { phone: fill.sdt || keep.phone, note: fill.ghiChu || keep.note }); }
             await remove('KhachHang', c.id);
           }
@@ -1124,6 +1221,20 @@ document.addEventListener('click', async e => {
       case 'add-lan': startDraft(groupById(id)); break;
       case 'new-order-for': startDraft(null, state.customers.find(x => x.id === id)); break;
       case 'merge-open': sheetMerge(groupById(id)); break;
+      case 'dview': state.dsnap.mode = val === 'need' || val === 'input' ? val : +val; render(true); break;
+      case 'done-toggle': { const s = state.dsnap.open; s.has(id) ? s.delete(id) : s.add(id); render(true); break; }
+      case 'sel-start': state.dsnap.sel = new Set(); render(true); break;
+      case 'sel-cancel': state.dsnap.sel = null; render(true); break;
+      case 'sel-toggle': { const s = state.dsnap.sel, did = el.dataset.did; s.has(did) ? s.delete(did) : s.add(did); render(true); break; }
+      case 'sel-all': document.querySelectorAll('[data-act="sel-toggle"][data-did]').forEach(b => state.dsnap.sel.add(b.dataset.did)); render(true); break;
+      case 'sel-set': { const s = state.dsnap, k = +val, all = state.orders.flatMap(o => o.dresses); let n = 0;
+        for (const did of s.sel) { const d = all.find(x => x.id === did); if (d && d.status !== k) { await upd('ChiTietDon', did, { trangThai: STATUS[k] }); n++; } s.st[did] = k; }   // đổi loạt thì xếp lại ngay
+        s.sel = null; await commit(true, n ? `Đã chuyển ${n} váy sang ${STATUS[k]}` : 'Các váy đã chọn vốn ở trạng thái này'); break; }
+      case 'change-cust': state.tmp = { gid: id, q: '' }; sheetChangeCustomer(); break;
+      case 'change-cust-to': { const g = groupById(state.tmp.gid), c = state.customers.find(x => x.id === id);
+        if (!confirm(`Chuyển đơn này (${g.lans.length > 1 ? g.lans.length + ' lần, ' : ''}${groupDresses(g).length} váy) từ ${customerOf(g).name} sang ${c.name}?`)) break;
+        for (const o of g.lans) await upd('DonHang', o.id, { khachId: c.id });
+        closeSheet(); await commit(true, 'Đã chuyển đơn sang ' + c.name); break; }
       case 'merge-into': { const g = groupById(id), target = groupById(val);
         for (const o of g.lans) await upd('DonHang', o.id, { donChungId: target.id });
         closeSheet(); state.stack[state.stack.length - 1] = { v: 'order', id: target.id }; await commit(true, 'Đã gộp đơn'); break; }
@@ -1133,11 +1244,25 @@ document.addEventListener('click', async e => {
         navDir = 'back'; state.stack.pop(); await commit(false, 'Đã xoá đơn'); break; }
 
       /* Khách */
-      case 'edit-customer': { const c = state.customers.find(x => x.id === id); state.tmp = { cid: c.id, name: c.name, channel: c.channel, phone: c.phone, note: c.note }; sheetCustomer(); break; }
+      case 'add-customer': state.tmp = blankCustomer(); sheetCustomer(); break;
+      case 'edit-customer': { const c = state.customers.find(x => x.id === id);
+        state.tmp = { cid: c.id, name: c.name, channel: c.channel, phone: c.phone, note: c.note, type: c.type, address: c.address, link: c.link, ship: c.ship }; sheetCustomer(); break; }
       case 'cu-channel': state.tmp.channel = val; sheetCustomer(); break;
+      case 'cu-type': state.tmp.type = state.tmp.type === val ? '' : val; sheetCustomer(); break;       // chạm lần nữa để bỏ chọn
+      case 'cust-type': state.filter.ctype = val; render(true); break;
       case 'save-customer': { const t = state.tmp; if (!t.name.trim()) { toast('Nhập tên'); break; }
         if (sameNameCustomer(t.name, t.cid)) { toast('Đã có khách khác tên “' + t.name.trim() + '”, thêm chữ để phân biệt'); break; }
-        await upd('KhachHang', t.cid, { ten: t.name.trim(), kenh: t.channel, sdt: t.phone.trim(), ghiChu: t.note.trim() }); closeSheet(); await commit(true, 'Đã lưu khách'); break; }
+        const rec = { ten: t.name.trim(), kenh: t.channel, sdt: t.phone.trim(), ghiChu: t.note.trim(), loaiKhach: t.type, diaChi: t.address.trim(), lienKet: t.link.trim(), guiQua: t.ship.trim() };
+        closeSheet();
+        if (t.cid) { await upd('KhachHang', t.cid, rec); await commit(true, 'Đã lưu khách'); break; }
+        const cid = uid('kh'); await save('KhachHang', Object.assign({ id: cid }, rec));
+        navDir = 'push'; state.stack.push({ v: 'customer', id: cid }); await commit(false, 'Đã thêm khách'); break; }
+      case 'del-customer': { const c = state.customers.find(x => x.id === state.tmp.cid), n = groupsOf(c).length;
+        if (n) { alert(`${c.name} còn ${n} đơn nên chưa xoá được. Xoá hết đơn của khách trước (hoặc dùng "Đổi khách" để chuyển đơn đi), rồi mới xoá khách.`); break; }
+        if (!confirm(`Xoá khách ${c.name}? Dòng vẫn còn trên Sheets với dấu đã xoá.`)) break;
+        await remove('KhachHang', c.id); closeSheet();
+        if (topView().v === 'customer') { navDir = 'back'; state.stack.pop(); }
+        await commit(false, 'Đã xoá khách'); break; }
 
       /* Hàng hóa */
       case 'stock-filter': sheetStockFilter(val); break;
@@ -1193,6 +1318,20 @@ document.addEventListener('click', async e => {
       case 'add-source': { const v = $('#new-source').value.trim(); if (!v) break; if (state.sources.some(s => norm(s) === norm(v))) { toast('Đã có kho này'); break; }
         await save('Nguon', { id: uid('ng'), ten: v, thuTu: state.sourceRecs.length + 1 }); await commit(true, 'Đã thêm kho'); break; }
       case 'del-source': if (confirm('Xoá kho này khỏi danh sách? Váy đã ghi kho này vẫn giữ tên.')) { await remove('Nguon', id); await commit(true); } break;
+      case 'rename-source': { const r = state.sourceRecs.find(x => x.id === id); state.tmp = { srcId: id };
+        openSheet(`<h3>Đổi tên kho</h3><label class="lab">Tên mới</label><input class="field" id="src-name" value="${esc(r.ten)}" autocomplete="off">
+          <p class="small-note">Váy trong đơn và hàng sẵn đang ghi tên cũ sẽ đổi theo.</p><button class="btn" style="margin-top:16px" data-act="save-source">Lưu</button>`); break; }
+      case 'save-source': { const r = state.sourceRecs.find(x => x.id === state.tmp.srcId), old = r.ten, v = $('#src-name').value.trim();
+        if (!v || v === old) { closeSheet(); break; }
+        if (state.sources.some(s => s !== old && norm(s) === norm(v))) { toast('Đã có kho tên này'); break; }
+        const drs = state.orders.flatMap(o => o.dresses).filter(d => d.source === old), sts = state.stock.filter(s => s.source === old);
+        if (drs.length + sts.length && !confirm(`Đổi "${old}" thành "${v}"? ${drs.length} váy trong đơn và ${sts.length} hàng sẵn đang ghi kho này cũng đổi theo.`)) break;
+        await upd('Nguon', r.id, { ten: v });
+        for (const d of drs) await upd('ChiTietDon', d.id, { kho: v });
+        for (const s of sts) await upd('HangHoa', s.id, { kho: v });
+        if (state.filter.source === old) state.filter.source = v;
+        if (state.sfilter.source === old) state.sfilter.source = v;
+        closeSheet(); await commit(true, 'Đã đổi tên kho'); break; }
     }
   } catch (err) {
     console.error(err); toast('Lỗi: ' + (err.message || err));
@@ -1211,6 +1350,7 @@ document.addEventListener('input', e => {
   else if (inn === 'draft-note') state.draft.note = t.value;
   else if (inn === 'draft-dnote') state.draft.dresses[+t.dataset.i].note = t.value;
   else if (inn === 'draft-due') state.draft.due = t.value;
+  else if (inn === 'draft-date') state.draft.date = t.value;
   else if (inn === 'ed-note') state.tmp.note = t.value;
   else if (inn === 'ss-note') state.tmp.note = t.value;
   else if (inn === 'ap-date') state.tmp.date = t.value;
@@ -1220,6 +1360,10 @@ document.addEventListener('input', e => {
   else if (inn === 'cu-name') state.tmp.name = t.value;
   else if (inn === 'cu-phone') state.tmp.phone = t.value;
   else if (inn === 'cu-note') state.tmp.note = t.value;
+  else if (inn === 'cu-address') state.tmp.address = t.value;
+  else if (inn === 'cu-link') state.tmp.link = t.value;
+  else if (inn === 'cu-ship') state.tmp.ship = t.value;
+  else if (inn === 'cc-q') { state.tmp.q = t.value; $('#cc-list').innerHTML = changeCustomerRows(); }
   else if (inn === 'cfg-url') state.tmp.cfg.url = t.value;
   else if (inn === 'cfg-key') state.tmp.cfg.key = t.value;
   else if (inn === 'lan-date') state.tmp.date = t.value;
