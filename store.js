@@ -3,7 +3,7 @@
    hàng đợi chờ gửi (outbox), ảnh chờ gửi (images) và vài giá trị lẻ (meta).
    Mọi hàm trả Promise. Mở app đọc từ đây trước, đồng bộ sau.
    ===================================================================== */
-const SYNC_TABS = ['KhachHang', 'DonHang', 'ChiTietDon', 'ThanhToan', 'LichHen', 'HangHoa', 'Nguon'];
+const SYNC_TABS = ['KhachHang', 'DonHang', 'ChiTietDon', 'ThanhToan', 'LichHen', 'HangHoa', 'Nguon', 'ThuChi'];
 
 const Store = {
   db: null,
@@ -12,13 +12,15 @@ const Store = {
   open() {
     if (this.db) return Promise.resolve(this.db);
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('moonhouse', 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        SYNC_TABS.forEach(t => { if (!db.objectStoreNames.contains(t)) db.createObjectStore(t, { keyPath: 'id' }); });
+      const req = indexedDB.open('moonhouse', 2);                 // 2: thêm bảng ThuChi (bản 1.7)
+      req.onupgradeneeded = e => {
+        const db = req.result, added = SYNC_TABS.filter(t => !db.objectStoreNames.contains(t));
+        added.forEach(t => db.createObjectStore(t, { keyPath: 'id' }));
         if (!db.objectStoreNames.contains('outbox')) db.createObjectStore('outbox', { autoIncrement: true });
         if (!db.objectStoreNames.contains('images')) db.createObjectStore('images', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'k' });
+        // Máy đã dùng app từ trước mà có bảng mới: xoá mốc đồng bộ để lần sau tải lại hết, không sót dòng của bảng mới
+        if (e.oldVersion > 0 && added.length) req.transaction.objectStore('meta').delete('lastSync');
       };
       req.onsuccess = () => { this.db = req.result; resolve(this.db); };
       req.onerror = () => reject(req.error);

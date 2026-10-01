@@ -39,7 +39,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.6.1';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.7';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -108,6 +108,7 @@ async function loadModel() {
     appts: (ap[r.id] || []).map(a => ({ id: a.id, date: fromIso(a.ngay), kind: a.loai || 'Khác', note: a.ghiChu || '' })).filter(a => a.date)
   }));
   state.stock = tabs.HangHoa.map(stockFromRec);
+  state.cash = tabs.ThuChi.map(r => ({ id: r.id, date: fromIso(r.ngay), so: r.so || '', kind: r.loai || '', amount: +r.soTien || 0, note: r.dienGiai || '' }));
   // Gom các lần đặt cùng donChungId thành một đơn; đánh số lần theo ngày đặt rồi theo thứ tự tạo
   const byG = groupBy(state.orders, 'gid');
   state.groups = Object.keys(byG).map(gid => {
@@ -227,7 +228,8 @@ const ICONS = {
   calendar: '<rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M8 3v4M16 3v4"/><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"/>',
   stock: '<path d="M12 9V7.6a2.1 2.1 0 1 0-2.1-2.1"/><path d="M12 9l8.6 6.2a1 1 0 0 1-.6 1.8H4a1 1 0 0 1-.6-1.8z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
-  history: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4 4.5V8h3.5"/><path d="M12 8v4.4l3 1.8"/>'
+  history: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4 4.5V8h3.5"/><path d="M12 8v4.4l3 1.8"/>',
+  cash: '<rect x="3.5" y="6" width="17" height="13" rx="2.5"/><path d="M3.5 10.5h17"/><circle cx="16.2" cy="14.6" r="1.3" fill="currentColor" stroke="none"/>'
 };
 const icon = n => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -311,7 +313,7 @@ const legend = () => `<div class="legend"><span><i style="background:var(--amber
 // Nhãn nút quay lại = tên màn hình ngay dưới trong ngăn xếp
 function backLabel() {
   const p = state.stack[state.stack.length - 2]; if (!p) return 'Quay lại';
-  return { today: 'Hôm nay', orders: 'Đơn hàng', calendar: 'Lịch', stock: 'Hàng hóa', customers: 'Khách hàng', settings: 'Cài đặt', history: 'Lịch sử', order: 'Đơn', customer: (state.customers.find(c => c.id === p.id) || {}).name }[p.v] || 'Quay lại';
+  return { today: 'Hôm nay', orders: 'Đơn hàng', calendar: 'Lịch', stock: 'Hàng hóa', customers: 'Khách hàng', settings: 'Cài đặt', history: 'Lịch sử', cash: 'Thu chi', order: 'Đơn', customer: (state.customers.find(c => c.id === p.id) || {}).name }[p.v] || 'Quay lại';
 }
 // Nhắc cài đặt kết nối nếu chưa có; đồng bộ lỗi thì nói rõ lý do (dữ liệu trên Google không bị ảnh hưởng)
 const setupBanner = () => !Api.ready()
@@ -827,13 +829,100 @@ function sheetPickStock() {
 }
 
 /* =====================================================================
+   10. SỔ THU CHI: hai sổ ghi tay (Tiền hàng, Quỹ shop), sổ liên tục, xem theo khoảng ngày
+   ===================================================================== */
+state.cash = [];
+state.cb = { so: 'Tiền hàng', range: 'month', from: '', to: '', kind: 'all' };
+const TC_BOOKS = ['Tiền hàng', 'Quỹ shop'];
+// Loại nào cộng, loại nào trừ (giống Code.gs). "Tồn đầu" là số tiền đang có khi bắt đầu ghi sổ
+const TC_SIGN = { 'Tồn đầu': 1, 'Doanh thu': 1, 'Online': 1, 'Thu': 1, 'Chi hàng': -1, 'Chi khác': -1, 'Chi': -1 };
+const TC_KINDS = { 'Tiền hàng': { in: ['Doanh thu', 'Online', 'Tồn đầu'], out: ['Chi hàng', 'Chi khác'] }, 'Quỹ shop': { in: ['Thu', 'Tồn đầu'], out: ['Chi'] } };
+const moneyN = n => money(n).replace('₫', '');
+// Khoảng ngày → [từ, đến, nhãn]; từ / đến null = không giới hạn
+function rangeOf(kind) {
+  const t = TODAY, y = t.getFullYear(), m = t.getMonth(), D = (a, b, c) => new Date(a, b, c);
+  if (kind === 'today') return [t, t, 'Hôm nay'];
+  if (kind === 'week') { const s = D(y, m, t.getDate() - (t.getDay() + 6) % 7); return [s, D(s.getFullYear(), s.getMonth(), s.getDate() + 6), 'Tuần này']; }
+  if (kind === 'month') return [D(y, m, 1), D(y, m + 1, 0), 'Tháng ' + (m + 1)];
+  if (kind === 'lastmonth') { const s = D(y, m - 1, 1); return [s, D(y, m, 0), 'Tháng ' + (s.getMonth() + 1)]; }
+  if (kind === 'custom') { const f = fromIso(state.cb.from), e = fromIso(state.cb.to); return [f, e, (f ? dm(f) : '…') + ' → ' + (e ? dm(e) : '…')]; }
+  return [null, null, 'Tất cả'];
+}
+// Tổng kết một sổ trong khoảng: tồn đầu = số còn trước ngày bắt đầu + dòng "Tồn đầu" trong khoảng; tồn cuối = còn lại tới hết ngày kết thúc
+function cbSum(so, from, to) {
+  const list = state.cash.filter(x => x.so === so && x.date && TC_SIGN[x.kind]);
+  const signed = arr => arr.reduce((s, x) => s + TC_SIGN[x.kind] * x.amount, 0);
+  const before = list.filter(x => from && x.date < from), rows = list.filter(x => (!from || x.date >= from) && (!to || x.date <= to));
+  const sum = k => rows.filter(x => x.kind === k).reduce((s, x) => s + x.amount, 0);
+  return { ton: signed(before) + sum('Tồn đầu'), sum, end: signed(before) + signed(rows) };
+}
+function viewCash() {
+  const c = state.cb, [from, to, label] = rangeOf(c.range), s = cbSum(c.so, from, to), th = c.so === 'Tiền hàng';
+  const cells = th ? [['Tồn đầu', s.ton, ''], ['Doanh thu', s.sum('Doanh thu'), 'in'], ['Online', s.sum('Online'), 'in'], ['Chi khác', s.sum('Chi khác'), 'out'], ['Chi hàng', s.sum('Chi hàng'), 'out']]
+    : [['Tồn đầu', s.ton, ''], ['Thu', s.sum('Thu'), 'in'], ['Chi', s.sum('Chi'), 'out']];
+  return topbar({ title: 'Thu chi', sub: 'Sổ liên tục, lọc theo ngày' }) + `
+    <div class="seg">${TC_BOOKS.map(b => `<button class="${b === c.so ? 'on' : ''}" data-act="cb-book" data-val="${b}">${b}</button>`).join('')}</div>
+    <div class="fbar"><button class="fbtn ${c.range !== 'all' ? 'on' : ''}" data-act="cb-range-open"><span>Khoảng ngày</span><b>${esc(label)}</b></button>
+      <button class="fbtn ${c.kind !== 'all' ? 'on' : ''}" data-act="cb-kind-open"><span>Loại</span><b>${c.kind === 'all' ? 'Tất cả' : esc(c.kind)}</b></button></div>
+    <div class="tcsum${th ? '' : ' two'}">${cells.map(([k, v, cl]) => `<div><span>${k}</span><b class="${cl}">${moneyN(v)}</b></div>`).join('')}
+      <div class="end"><span>Tồn cuối</span><b class="${s.end < 0 ? 'neg' : ''}">${moneyN(s.end)}</b></div></div>
+    <div class="tcbtn"><button class="btn in" data-act="tc-add" data-val="in">＋ Thu</button><button class="btn out" data-act="tc-add" data-val="out">＋ Chi</button></div>
+    <div class="block tclist">${cashList(c.so, from, to)}</div>`;
+}
+// Các khoản của sổ trong khoảng ngày (và loại đang lọc), mới nhất trước, chia theo ngày
+function cashList(so, from, to) {
+  if (!state.cash.some(x => x.so === so)) return '<div class="empty">Sổ trắng. Bấm “＋ Thu”, chọn loại “Tồn đầu” để nhập số tiền đang có, rồi ghi các khoản thu chi.</div>';
+  const k = state.cb.kind;
+  const rows = state.cash.filter(x => x.so === so && (!from || (x.date && x.date >= from)) && (!to || (x.date && x.date <= to)) && (k === 'all' || x.kind === k))
+    .sort((a, b) => (b.date || 0) - (a.date || 0) || (a.id < b.id ? 1 : -1));
+  if (!rows.length) return '<div class="empty">Không có khoản nào trong khoảng này</div>';
+  let html = '', day = null;
+  rows.forEach(x => {
+    const d = x.date ? logDay(x.date) : 'Chưa có ngày';
+    if (d !== day) { html += (day ? '</div>' : '') + `<div class="dayhead">${d}</div><div class="group">`; day = d; }
+    const sg = TC_SIGN[x.kind], cls = x.kind === 'Tồn đầu' ? 'base' : sg > 0 ? 'in' : sg < 0 ? 'out' : 'base';
+    html += `<button class="tc" data-act="tc-edit" data-id="${x.id}"><div class="main"><b>${esc(x.note || x.kind)}</b><span class="kind ${cls}">${esc(x.kind || 'Chưa có loại')}</span></div>
+      <b class="amt ${cls}">${cls === 'in' ? '+' : cls === 'out' ? '−' : ''}${moneyN(x.amount)}</b></button>`;
+  });
+  return html + '</div>';
+}
+// Bảng thêm / sửa một khoản: số tiền, loại, ngày (tự lấy hôm nay), diễn giải
+function sheetTC() {
+  const t = state.tmp, kinds = TC_KINDS[t.so] ? TC_KINDS[t.so][t.dir] : [];
+  openSheet(`<h3>${t.id ? 'Sửa' : 'Thêm'} khoản ${t.dir === 'in' ? 'thu' : 'chi'} · ${esc(t.so)}</h3>
+    <label class="lab">Số tiền</label><label class="kfield"><input inputmode="numeric" data-in="tc-amt" value="${t.tca ? moneyN(t.tca) : ''}" placeholder="0" autocomplete="off"><i>₫</i></label>
+    <label class="lab">Loại</label><div class="chips wrap">${kinds.map(k => `<button class="chip ${t.kind === k ? 'on' : ''}" data-act="tc-kind" data-val="${k}">${k}</button>`).join('')}</div>
+    ${t.kind === 'Tồn đầu' ? '<p class="small-note">Tồn đầu là số tiền đang có khi bắt đầu ghi sổ.</p>' : ''}
+    <label class="lab">Ngày</label><input class="field" type="date" data-in="tc-date" value="${t.date}">
+    <label class="lab">Diễn giải</label><input class="field" data-in="tc-note" value="${esc(t.note)}" placeholder="${t.dir === 'in' ? 'Ví dụ: Nhập quỹ, khách trả tiền mặt' : 'Ví dụ: Sửa váy, trả xưởng Duẫn'}" autocomplete="off">
+    <button class="btn" style="margin-top:16px" data-act="tc-save">Lưu</button>
+    ${t.id ? '<button class="linkbtn danger" style="margin-top:6px;justify-content:center;width:100%" data-act="tc-del">Xoá khoản này</button>' : ''}`);
+}
+// Bảng chọn khoảng ngày: chọn nhanh hoặc tự chọn từ ngày → đến ngày
+function sheetCbRange() {
+  const cur = state.cb.range, opts = [['today', 'Hôm nay'], ['week', 'Tuần này'], ['month', 'Tháng này'], ['lastmonth', 'Tháng trước'], ['all', 'Tất cả'], ['custom', 'Tự chọn']];
+  const sub = k => { if (k === 'all') return 'từ dòng Tồn đầu'; if (k === 'custom') return 'chọn 2 ngày bên dưới'; const [f, e] = rangeOf(k); return sameDay(f, e) ? dm(f) : dm(f) + ' → ' + dm(e); };
+  openSheet(`<h3>Khoảng ngày</h3><div class="opt-grid">${opts.map(([k, l]) => `<button class="opt ${cur === k ? 'on' : ''}" data-act="cb-range" data-val="${k}"><b>${l}</b><span>${sub(k)}</span></button>`).join('')}</div>
+    <div class="two-dates"><div><label class="lab" style="margin-top:0">Từ ngày</label><input class="field" type="date" data-in="cb-from" value="${state.cb.from}"></div>
+      <div><label class="lab" style="margin-top:0">Đến ngày</label><input class="field" type="date" data-in="cb-to" value="${state.cb.to}"></div></div>
+    <button class="btn" style="margin-top:14px" data-act="cb-range-apply">Xem khoảng tự chọn</button>`);
+}
+// Bảng chọn loại của sổ đang xem, kèm số khoản trong khoảng ngày
+function sheetCbKind() {
+  const so = state.cb.so, [from, to] = rangeOf(state.cb.range), cur = state.cb.kind;
+  const inRange = state.cash.filter(x => x.so === so && (!from || (x.date && x.date >= from)) && (!to || (x.date && x.date <= to)));
+  const opts = ['all', ...TC_KINDS[so].in, ...TC_KINDS[so].out];
+  openSheet(`<h3>Loại · ${esc(so)}</h3><div class="opt-grid">${opts.map(k => `<button class="opt ${cur === k ? 'on' : ''}" data-act="cb-kind" data-val="${esc(k)}"><b>${k === 'all' ? 'Tất cả' : k}</b><span>${inRange.filter(x => k === 'all' || x.kind === k).length} khoản</span></button>`).join('')}</div>`);
+}
+
+/* =====================================================================
    9. LỊCH SỬ CẬP NHẬT: đọc tab LichSu trên Sheets (mới nhất trước, 100 dòng mỗi lần), chỉ để xem
    ===================================================================== */
 state.log = { rows: [], total: 0, at: 0, busy: false, error: '' };
 state.lfilter = { kind: 'all', act: 'all', q: '' };
-const LOG_KINDS = ['Khách', 'Lần đặt', 'Váy', 'Thu tiền', 'Lịch hẹn', 'Hàng hóa', 'Kho'];
+const LOG_KINDS = ['Khách', 'Lần đặt', 'Váy', 'Thu tiền', 'Lịch hẹn', 'Hàng hóa', 'Kho', 'Thu chi'];
 const LOG_ACTS = ['Thêm', 'Sửa', 'Xoá', 'Lấy lại', 'Thêm ảnh', 'Đổi ảnh'];
-const LOG_TAB_KIND = { KhachHang: 'Khách', DonHang: 'Lần đặt', ChiTietDon: 'Váy', ThanhToan: 'Thu tiền', LichHen: 'Lịch hẹn', HangHoa: 'Hàng hóa', Nguon: 'Kho' };
+const LOG_TAB_KIND = { KhachHang: 'Khách', DonHang: 'Lần đặt', ChiTietDon: 'Váy', ThanhToan: 'Thu tiền', LichHen: 'Lịch hẹn', HangHoa: 'Hàng hóa', Nguon: 'Kho', ThuChi: 'Thu chi' };
 const ACT_TONE = { 'Thêm': 'add', 'Thêm ảnh': 'add', 'Đổi ảnh': 'add', 'Lấy lại': 'add', 'Sửa': 'edit', 'Xoá': 'del', 'Chờ gửi': 'pend' };
 function viewHistory() {
   const f = state.lfilter;
@@ -862,7 +951,8 @@ function localLabel(tab, r) {
   const cname = id => (state.customers.find(c => c.id === id) || {}).name || 'khách mới';
   const don = id => { const o = state.orders.find(x => x.id === id); return o ? cname(o.cid) + ' · đơn ' + dateLabel(o.date) : 'đơn mới'; };
   return ({ KhachHang: () => r.ten, DonHang: () => cname(r.khachId) + ' · đơn ' + dateLabel(fromIso(r.ngayDat)), ChiTietDon: () => don(r.donHangId) + ' · váy ' + (r.thuTu || ''),
-    ThanhToan: () => don(r.donHangId), LichHen: () => don(r.donHangId) + ' · ' + (r.loai || ''), HangHoa: () => 'Hàng ' + [r.size, r.kho].filter(Boolean).join(' · '), Nguon: () => 'Kho ' + r.ten }[tab] || (() => r.id))();
+    ThanhToan: () => don(r.donHangId), LichHen: () => don(r.donHangId) + ' · ' + (r.loai || ''), HangHoa: () => 'Hàng ' + [r.size, r.kho].filter(Boolean).join(' · '), Nguon: () => 'Kho ' + r.ten,
+    ThuChi: () => [r.so, r.loai, r.dienGiai].filter(Boolean).join(' · ') }[tab] || (() => r.id))();
 }
 // Tiêu đề ngày: Hôm nay · 1/10, Hôm qua · 30/9, Thứ Ba · 29/9
 function logDay(iso) {
@@ -1143,11 +1233,12 @@ document.addEventListener('pointermove', e => {
 /* =====================================================================
    MENU GIỮA + ĐIỀU HƯỚNG + VẼ
    ===================================================================== */
-const MENU = [['today', 'Hôm nay'], ['calendar', 'Lịch'], ['orders', 'Đơn hàng'], ['stock', 'Hàng hóa'], ['customers', 'Khách hàng'], ['settings', 'Cài đặt'], ['history', 'Lịch sử']];
+const MENU = [['today', 'Hôm nay'], ['calendar', 'Lịch'], ['orders', 'Đơn hàng'], ['stock', 'Hàng hóa'], ['customers', 'Khách hàng'], ['cash', 'Thu chi'], ['settings', 'Cài đặt'], ['history', 'Lịch sử']];
 function menuSub(k) {
   const in7 = allEvents().filter(e => { const n = daysTo(e.date); return n >= 0 && n <= 6; }).length;
   return { today: WEEKDAYS[TODAY.getDay()] + ', ' + dm(TODAY), calendar: in7 + ' việc trong 7 ngày', orders: state.groups.length + ' đơn · ' + state.groups.filter(g => groupOwed(g) > 0).length + ' chưa thu đủ',
-    stock: state.stock.filter(s => s.status === 'Sẵn').length + ' váy sẵn trong shop', customers: state.customers.length + ' khách', settings: syncText(), history: 'Thay đổi trên app và Sheets' }[k];
+    stock: state.stock.filter(s => s.status === 'Sẵn').length + ' váy sẵn trong shop', customers: state.customers.length + ' khách', settings: syncText(), history: 'Thay đổi trên app và Sheets',
+    cash: state.cash.some(x => x.so === 'Tiền hàng') ? 'Tiền hàng còn ' + money(cbSum('Tiền hàng', null, null).end) : 'Sổ Tiền hàng và Quỹ shop' }[k];
 }
 function renderMenu() {
   const cur = state.stack[0].v;
@@ -1181,7 +1272,7 @@ let navDir = 'tab';
 // Vẽ màn hình hiện tại; giữ vị trí cuộn khi chỉ đổi dữ liệu tại chỗ
 function render(keepScroll) {
   const y = $('#app').scrollTop, v = topView();
-  const map = { today: viewToday, orders: viewOrders, order: viewOrder, customers: viewCustomers, customer: viewCustomer, settings: viewSettings, new: viewNew, calendar: viewCalendar, stock: viewStock, history: viewHistory };
+  const map = { today: viewToday, orders: viewOrders, order: viewOrder, customers: viewCustomers, customer: viewCustomer, settings: viewSettings, new: viewNew, calendar: viewCalendar, stock: viewStock, history: viewHistory, cash: viewCash };
   if (v.v !== 'order') state.dsnap = null;                          // rời đơn: lần sau mở lại xếp theo trạng thái mới
   $('#view').innerHTML = map[v.v](v);
   $('#fab').style.display = v.v === 'new' || (state.dsnap && state.dsnap.sel) ? 'none' : 'grid';
@@ -1417,6 +1508,27 @@ document.addEventListener('click', async e => {
       case 'set-lkind': state.lfilter.kind = val; closeSheet(); render(true); break;
       case 'set-lact': state.lfilter.act = val; closeSheet(); render(true); break;
       case 'log-more': loadLog(true); break;
+      /* Thu chi */
+      case 'cb-book': state.cb.so = val; state.cb.kind = 'all'; render(true); break;
+      case 'cb-range-open': sheetCbRange(); break;
+      case 'cb-range': if (val === 'custom') { const f = $('[data-in="cb-from"]'); if (f) f.focus(); break; } state.cb.range = val; closeSheet(); render(true); break;
+      case 'cb-range-apply': { const c = state.cb; if (!c.from || !c.to) { toast('Chọn cả từ ngày và đến ngày'); break; }
+        if (c.from > c.to) { toast('Từ ngày phải trước đến ngày'); break; }
+        c.range = 'custom'; closeSheet(); render(true); break; }
+      case 'cb-kind-open': sheetCbKind(); break;
+      case 'cb-kind': state.cb.kind = val; closeSheet(); render(true); break;
+      case 'tc-add': { const so = state.cb.so; state.tmp = { id: null, so, dir: val, kind: TC_KINDS[so][val][0], tca: 0, date: toIso(TODAY), note: '' }; sheetTC(); break; }
+      case 'tc-edit': { const x = state.cash.find(c => c.id === id);
+        state.tmp = { id, so: x.so, dir: (TC_SIGN[x.kind] || -1) > 0 ? 'in' : 'out', kind: x.kind, tca: x.amount, date: x.date ? toIso(x.date) : '', note: x.note }; sheetTC(); break; }
+      case 'tc-kind': state.tmp.kind = val; sheetTC(); break;
+      case 'tc-save': { const t = state.tmp;
+        if (!t.tca) { toast('Nhập số tiền'); break; }
+        if (!t.date) { toast('Chọn ngày'); break; }
+        if (!TC_SIGN[t.kind]) { toast('Chọn loại'); break; }
+        const rec = { ngay: t.date, so: t.so, loai: t.kind, soTien: t.tca, dienGiai: t.note.trim() };
+        if (t.id) await upd('ThuChi', t.id, rec); else await save('ThuChi', Object.assign({ id: uid('tc') }, rec));
+        closeSheet(); await commit(true, (t.id ? 'Đã lưu khoản ' : 'Đã thêm khoản ') + (TC_SIGN[t.kind] > 0 ? 'thu' : 'chi')); break; }
+      case 'tc-del': if (confirm('Xoá khoản này khỏi sổ? Dòng vẫn còn trên Sheets với dấu đã xoá.')) { await remove('ThuChi', state.tmp.id); closeSheet(); await commit(true, 'Đã xoá khoản'); } break;
       case 'log-reload': loadLog(); break;
       case 'set-sstatus': state.sfilter.status = val; closeSheet(); render(true); break;
       case 'set-ssource': state.sfilter.source = val; closeSheet(); render(true); break;
@@ -1503,6 +1615,11 @@ document.addEventListener('input', e => {
   else if (t.id === 'cust-search') { state.filter.cq = t.value; renderCustomerList(); }
   else if (t.id === 'stock-q') { state.sfilter.q = t.value; renderStockGrid(); }
   else if (t.id === 'log-q') { state.lfilter.q = t.value; renderLogList(); }
+  else if (inn === 'tc-amt') { const d = t.value.replace(/\D/g, '').slice(0, 12); t.value = d ? moneyN(+d) : ''; state.tmp.tca = +d || 0; }   // gõ đủ số đồng, tự thêm dấu chấm
+  else if (inn === 'tc-date') state.tmp.date = t.value;
+  else if (inn === 'tc-note') state.tmp.note = t.value;
+  else if (inn === 'cb-from') state.cb.from = t.value;
+  else if (inn === 'cb-to') state.cb.to = t.value;
   else if (t.id === 'cust-q') { const d = state.draft; d.name = t.value; d.cid = null; d.target = null; renderCustomerSuggest(); refreshDraftSummary(); }
   else if (inn === 'order-note') { const id = t.dataset.id, v = t.value; debounced('note' + id, async () => { await upd('DonHang', id, { note: v.trim() }); const o = orderById(id); if (o) o.note = v; Sync.schedule(); }); }
   else if (inn === 'draft-note') state.draft.note = t.value;
