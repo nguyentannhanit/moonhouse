@@ -3,13 +3,14 @@
    và cache ảnh thumbnail từ Drive để không tải lại. Không bao giờ cache lời gọi Apps Script.
    Đổi số phiên bản CACHE mỗi lần sửa file app để điện thoại tải bản mới.
    ===================================================================== */
-const CACHE = 'moonhouse-v8';
+const CACHE = 'moonhouse-v9';
 const SHELL = ['./', './index.html', './app.css', './app.js', './store.js', './api.js', './sync.js', './manifest.json',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'];
 
-// Cài: tải sẵn vỏ app
+// Cài: tải sẵn vỏ app, luôn lấy thẳng từ máy chủ. GitHub cho trình duyệt giữ file 10 phút; lấy qua chỗ giữ đó
+// thì bản cài mới có thể cất nhầm file cũ và kẹt luôn ở bản cũ (đã gặp ở bản 1.5)
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 // Kích hoạt: xóa cache phiên bản cũ
 self.addEventListener('activate', e => {

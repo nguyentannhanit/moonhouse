@@ -39,7 +39,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.5';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.5.1';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -1117,8 +1117,13 @@ function render(keepScroll) {
   $('#app').scrollTop = keepScroll ? y : 0;
   if (!keepScroll) enterScreen(topView().v);
   navDir = 'tab';
+  if (state.reloadLater) setTimeout(reloadIfSafe, 0);
 }
 const push = v => { navDir = 'push'; state.stack.push(v); render(); };
+// Có bản app mới: tải lại ngay nếu không đang nhập đơn, không mở bảng, không gõ chữ; nếu đang bận thì đợi lần vẽ màn sau
+function reloadIfSafe() {
+  if (state.reloadLater && topView().v !== 'new' && !sheetOpen() && !typingIn('body')) location.reload();
+}
 
 /* ---------- Hiệu ứng (tự chạy tắt nếu máy bật "giảm chuyển động") ---------- */
 const REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1481,5 +1486,13 @@ document.addEventListener('change', async e => {
   });
   Sync.start();
   if (Api.ready()) Sync.run(!Sync.lastAt);
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Bản mới của app: kiểm mỗi lần mở và mỗi lần quay lại app; có bản mới thì tự tải lại (đang nhập dở thì đợi xong)
+  if ('serviceWorker' in navigator) {
+    const hadCtrl = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+      reg.update().catch(() => {});
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadCtrl) { state.reloadLater = true; reloadIfSafe(); } });
+  }
 })();
