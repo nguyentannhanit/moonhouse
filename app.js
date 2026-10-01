@@ -39,7 +39,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.5.1';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.6';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -226,7 +226,8 @@ const ICONS = {
   settings: '<path d="M4 8h16M4 16h16"/><circle cx="9" cy="8" r="2.4"/><circle cx="15" cy="16" r="2.4"/>',
   calendar: '<rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M8 3v4M16 3v4"/><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"/>',
   stock: '<path d="M12 9V7.6a2.1 2.1 0 1 0-2.1-2.1"/><path d="M12 9l8.6 6.2a1 1 0 0 1-.6 1.8H4a1 1 0 0 1-.6-1.8z"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>'
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  history: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4 4.5V8h3.5"/><path d="M12 8v4.4l3 1.8"/>'
 };
 const icon = n => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -310,7 +311,7 @@ const legend = () => `<div class="legend"><span><i style="background:var(--amber
 // Nhãn nút quay lại = tên màn hình ngay dưới trong ngăn xếp
 function backLabel() {
   const p = state.stack[state.stack.length - 2]; if (!p) return 'Quay lại';
-  return { today: 'Hôm nay', orders: 'Đơn hàng', calendar: 'Lịch', stock: 'Hàng hóa', customers: 'Khách hàng', settings: 'Cài đặt', order: 'Đơn', customer: (state.customers.find(c => c.id === p.id) || {}).name }[p.v] || 'Quay lại';
+  return { today: 'Hôm nay', orders: 'Đơn hàng', calendar: 'Lịch', stock: 'Hàng hóa', customers: 'Khách hàng', settings: 'Cài đặt', history: 'Lịch sử', order: 'Đơn', customer: (state.customers.find(c => c.id === p.id) || {}).name }[p.v] || 'Quay lại';
 }
 // Nhắc cài đặt kết nối nếu chưa có; đồng bộ lỗi thì nói rõ lý do (dữ liệu trên Google không bị ảnh hưởng)
 const setupBanner = () => !Api.ready()
@@ -826,6 +827,83 @@ function sheetPickStock() {
 }
 
 /* =====================================================================
+   9. LỊCH SỬ CẬP NHẬT: đọc tab LichSu trên Sheets (mới nhất trước, 100 dòng mỗi lần), chỉ để xem
+   ===================================================================== */
+state.log = { rows: [], total: 0, at: 0, busy: false, error: '' };
+state.lfilter = { kind: 'all', act: 'all', q: '' };
+const LOG_KINDS = ['Khách', 'Lần đặt', 'Váy', 'Thu tiền', 'Lịch hẹn', 'Hàng hóa', 'Kho'];
+const LOG_ACTS = ['Thêm', 'Sửa', 'Xoá', 'Lấy lại', 'Thêm ảnh', 'Đổi ảnh'];
+const LOG_TAB_KIND = { KhachHang: 'Khách', DonHang: 'Lần đặt', ChiTietDon: 'Váy', ThanhToan: 'Thu tiền', LichHen: 'Lịch hẹn', HangHoa: 'Hàng hóa', Nguon: 'Kho' };
+const ACT_TONE = { 'Thêm': 'add', 'Thêm ảnh': 'add', 'Đổi ảnh': 'add', 'Lấy lại': 'add', 'Sửa': 'edit', 'Xoá': 'del', 'Chờ gửi': 'pend' };
+function viewHistory() {
+  const f = state.lfilter;
+  return topbar({ title: 'Lịch sử', sub: 'Mọi thay đổi trên app và Sheets' }) + `
+    <div class="search"><input class="field" id="log-q" type="search" placeholder="Tìm theo tên khách, kho…" value="${esc(f.q)}" autocomplete="off"></div>
+    <div class="fbar"><button class="fbtn ${f.kind !== 'all' ? 'on' : ''}" data-act="log-filter" data-val="kind"><span>Loại</span><b>${f.kind === 'all' ? 'Tất cả' : esc(f.kind)}</b></button>
+      <button class="fbtn ${f.act !== 'all' ? 'on' : ''}" data-act="log-filter" data-val="act"><span>Hành động</span><b>${f.act === 'all' ? 'Tất cả' : esc(f.act)}</b></button></div>
+    <div class="block loglist" id="log-list"></div>`;
+}
+// Tải một trang lịch sử từ Sheets; more = tải tiếp trang cũ hơn
+async function loadLog(more) {
+  const L = state.log;
+  if (L.busy || !Api.ready()) return;
+  L.busy = true; L.error = ''; renderLogList();
+  try {
+    const r = await Api.get('getLog', { limit: 100, offset: more ? L.rows.length : 0 });
+    L.rows = more ? L.rows.concat(r.rows) : r.rows; L.total = r.total; L.at = Date.now();
+  } catch (e) {
+    L.error = /Không hiểu action/.test(e.message) ? 'Apps Script chưa có Lịch sử: dán Code.gs bản 1.6 rồi triển khai phiên bản mới.' : e.message;
+  }
+  L.busy = false;
+  if (topView().v === 'history') renderLogList();
+}
+// Tên đối tượng cho thay đổi còn trong máy (chưa lên Sheets)
+function localLabel(tab, r) {
+  const cname = id => (state.customers.find(c => c.id === id) || {}).name || 'khách mới';
+  const don = id => { const o = state.orders.find(x => x.id === id); return o ? cname(o.cid) + ' · đơn ' + dateLabel(o.date) : 'đơn mới'; };
+  return ({ KhachHang: () => r.ten, DonHang: () => cname(r.khachId) + ' · đơn ' + dateLabel(fromIso(r.ngayDat)), ChiTietDon: () => don(r.donHangId) + ' · váy ' + (r.thuTu || ''),
+    ThanhToan: () => don(r.donHangId), LichHen: () => don(r.donHangId) + ' · ' + (r.loai || ''), HangHoa: () => 'Hàng ' + [r.size, r.kho].filter(Boolean).join(' · '), Nguon: () => 'Kho ' + r.ten }[tab] || (() => r.id))();
+}
+// Tiêu đề ngày: Hôm nay · 1/10, Hôm qua · 30/9, Thứ Ba · 29/9
+function logDay(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return 'Không rõ ngày';
+  const d0 = new Date(d); d0.setHours(0, 0, 0, 0);
+  const n = Math.round((TODAY - d0) / 864e5);
+  return (n === 0 ? 'Hôm nay' : n === 1 ? 'Hôm qua' : WEEKDAYS[d.getDay()]) + ' · ' + dm(d);
+}
+const logRow = r => `<div class="log"><span class="act ${ACT_TONE[r.hanhDong] || 'edit'}">${esc(r.hanhDong)}</span><div class="main"><b>${esc(r.doiTuong)}</b>
+  ${String(r.thayDoi || '').split('\n').filter(Boolean).map(l => `<span class="chg">${esc(l)}</span>`).join('')}<span class="meta">${hhmm(r.at)} · ${esc(r.nguon)} · ${esc(r.loai)}</span></div></div>`;
+// Vẽ danh sách: thay đổi chờ gửi trên cùng, rồi từng ngày; lọc và tìm làm ngay trong máy
+async function renderLogList() {
+  const box = $('#log-list'); if (!box) return;
+  const L = state.log, f = state.lfilter, q = f.q.trim();
+  const keep = r => (f.kind === 'all' || r.loai === f.kind) && (f.act === 'all' || r.hanhDong === f.act) && (!q || matchText(r.doiTuong + ' ' + r.thayDoi, q));
+  const latest = {};
+  (await Store.outboxAll()).filter(x => x.item.rec).forEach(x => { latest[x.item.tab + '|' + x.item.rec.id] = x.item; });
+  const pend = Object.values(latest).map(it => ({ at: it.rec.updatedAt, nguon: 'App', hanhDong: 'Chờ gửi', loai: LOG_TAB_KIND[it.tab] || it.tab, doiTuong: localLabel(it.tab, it.rec),
+    thayDoi: it.rec.daXoa ? 'Đánh dấu xoá' : 'Chi tiết thay đổi hiện khi đã lên Sheets' })).filter(r => (f.kind === 'all' || r.loai === f.kind) && f.act === 'all' && (!q || matchText(r.doiTuong, q)));
+  const rows = L.rows.filter(keep).sort((a, b) => a.at < b.at ? 1 : -1);
+  let html = pend.length ? `<div class="dayhead">Chưa gửi lên Sheets</div><div class="group">${pend.map(logRow).join('')}</div>` : '';
+  let day = null;
+  rows.forEach(r => { const k = logDay(r.at); if (k !== day) { html += (day ? '</div>' : '') + `<div class="dayhead">${k}</div><div class="group">`; day = k; } html += logRow(r); });
+  if (day) html += '</div>';
+  if (!Api.ready()) html += '<div class="empty">Chưa kết nối Google Sheets nên chưa xem được lịch sử.</div>';
+  else if (L.error) html += `<div class="banner err" style="margin:14px 0 0"><b>Không tải được lịch sử</b>${esc(L.error)}<br><button data-act="log-reload">Thử lại</button></div>`;
+  else if (L.busy && !L.rows.length) html += '<div class="empty">Đang tải lịch sử…</div>';
+  else if (!rows.length && !pend.length) html += `<div class="empty">${L.rows.length ? 'Không có thay đổi nào khớp bộ lọc' : 'Chưa có thay đổi nào. Lịch sử bắt đầu ghi từ bản 1.6.'}</div>`;
+  if (L.rows.length < L.total) html += `<button class="btn ghost" style="margin-top:14px" data-act="log-more" ${L.busy ? 'disabled' : ''}>${L.busy ? 'Đang tải…' : 'Xem thêm ' + Math.min(100, L.total - L.rows.length) + ' thay đổi cũ hơn'}</button>`;
+  box.innerHTML = html;
+}
+// Bảng chọn lọc theo loại / hành động, kèm số dòng đã tải
+function sheetLogFilter(kind) {
+  const isK = kind === 'kind', cur = isK ? state.lfilter.kind : state.lfilter.act, opts = ['all', ...(isK ? LOG_KINDS : LOG_ACTS)];
+  const cnt = v => state.log.rows.filter(r => v === 'all' || (isK ? r.loai : r.hanhDong) === v).length;
+  openSheet(`<h3>${isK ? 'Loại' : 'Hành động'}</h3><p class="sub" style="margin:0">Đếm trong ${state.log.rows.length} thay đổi đã tải</p>
+    <div class="opt-grid">${opts.map(v => `<button class="opt ${cur === v ? 'on' : ''}" data-act="${isK ? 'set-lkind' : 'set-lact'}" data-val="${esc(v)}"><b>${v === 'all' ? 'Tất cả' : esc(v)}</b><span>${cnt(v)} thay đổi</span></button>`).join('')}</div>`);
+}
+
+/* =====================================================================
    6. CÀI ĐẶT
    ===================================================================== */
 function viewSettings() {
@@ -1065,11 +1143,11 @@ document.addEventListener('pointermove', e => {
 /* =====================================================================
    MENU GIỮA + ĐIỀU HƯỚNG + VẼ
    ===================================================================== */
-const MENU = [['today', 'Hôm nay'], ['calendar', 'Lịch'], ['orders', 'Đơn hàng'], ['stock', 'Hàng hóa'], ['customers', 'Khách hàng'], ['settings', 'Cài đặt']];
+const MENU = [['today', 'Hôm nay'], ['calendar', 'Lịch'], ['orders', 'Đơn hàng'], ['stock', 'Hàng hóa'], ['customers', 'Khách hàng'], ['settings', 'Cài đặt'], ['history', 'Lịch sử']];
 function menuSub(k) {
   const in7 = allEvents().filter(e => { const n = daysTo(e.date); return n >= 0 && n <= 6; }).length;
   return { today: WEEKDAYS[TODAY.getDay()] + ', ' + dm(TODAY), calendar: in7 + ' việc trong 7 ngày', orders: state.groups.length + ' đơn · ' + state.groups.filter(g => groupOwed(g) > 0).length + ' chưa thu đủ',
-    stock: state.stock.filter(s => s.status === 'Sẵn').length + ' váy sẵn trong shop', customers: state.customers.length + ' khách', settings: syncText() }[k];
+    stock: state.stock.filter(s => s.status === 'Sẵn').length + ' váy sẵn trong shop', customers: state.customers.length + ' khách', settings: syncText(), history: 'Thay đổi trên app và Sheets' }[k];
 }
 function renderMenu() {
   const cur = state.stack[0].v;
@@ -1103,13 +1181,14 @@ let navDir = 'tab';
 // Vẽ màn hình hiện tại; giữ vị trí cuộn khi chỉ đổi dữ liệu tại chỗ
 function render(keepScroll) {
   const y = $('#app').scrollTop, v = topView();
-  const map = { today: viewToday, orders: viewOrders, order: viewOrder, customers: viewCustomers, customer: viewCustomer, settings: viewSettings, new: viewNew, calendar: viewCalendar, stock: viewStock };
+  const map = { today: viewToday, orders: viewOrders, order: viewOrder, customers: viewCustomers, customer: viewCustomer, settings: viewSettings, new: viewNew, calendar: viewCalendar, stock: viewStock, history: viewHistory };
   if (v.v !== 'order') state.dsnap = null;                          // rời đơn: lần sau mở lại xếp theo trạng thái mới
   $('#view').innerHTML = map[v.v](v);
   $('#fab').style.display = v.v === 'new' || (state.dsnap && state.dsnap.sel) ? 'none' : 'grid';
   if (topView().v === 'orders') renderOrderList();
   if (topView().v === 'customers') renderCustomerList();
   if (topView().v === 'stock') renderStockGrid();
+  if (topView().v === 'history') { renderLogList(); if (Date.now() - state.log.at > 20000) loadLog(); }   // mở màn: tải lại nếu đã cũ hơn 20 giây
   if (topView().v === 'new') { renderCustomerSuggest(); renderDressForms(); }
   // Mở Cài đặt lần đầu: hỏi máy chủ phiên bản Code.gs để hiện ở cuối trang
   if (topView().v === 'settings' && Api.ready() && !state.serverVersion)
@@ -1334,6 +1413,11 @@ document.addEventListener('click', async e => {
 
       /* Hàng hóa */
       case 'stock-filter': sheetStockFilter(val); break;
+      case 'log-filter': sheetLogFilter(val); break;
+      case 'set-lkind': state.lfilter.kind = val; closeSheet(); render(true); break;
+      case 'set-lact': state.lfilter.act = val; closeSheet(); render(true); break;
+      case 'log-more': loadLog(true); break;
+      case 'log-reload': loadLog(); break;
       case 'set-sstatus': state.sfilter.status = val; closeSheet(); render(true); break;
       case 'set-ssource': state.sfilter.source = val; closeSheet(); render(true); break;
       case 'stock-edit': { const st = id && state.stock.find(x => x.id === id);
@@ -1418,6 +1502,7 @@ document.addEventListener('input', e => {
   else if (t.id === 'order-q') { state.filter.q = t.value; renderOrderList(); }
   else if (t.id === 'cust-search') { state.filter.cq = t.value; renderCustomerList(); }
   else if (t.id === 'stock-q') { state.sfilter.q = t.value; renderStockGrid(); }
+  else if (t.id === 'log-q') { state.lfilter.q = t.value; renderLogList(); }
   else if (t.id === 'cust-q') { const d = state.draft; d.name = t.value; d.cid = null; d.target = null; renderCustomerSuggest(); refreshDraftSummary(); }
   else if (inn === 'order-note') { const id = t.dataset.id, v = t.value; debounced('note' + id, async () => { await upd('DonHang', id, { note: v.trim() }); const o = orderById(id); if (o) o.note = v; Sync.schedule(); }); }
   else if (inn === 'draft-note') state.draft.note = t.value;
