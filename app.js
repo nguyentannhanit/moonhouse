@@ -39,7 +39,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.7';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.8';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -229,7 +229,9 @@ const ICONS = {
   stock: '<path d="M12 9V7.6a2.1 2.1 0 1 0-2.1-2.1"/><path d="M12 9l8.6 6.2a1 1 0 0 1-.6 1.8H4a1 1 0 0 1-.6-1.8z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   history: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4 4.5V8h3.5"/><path d="M12 8v4.4l3 1.8"/>',
-  cash: '<rect x="3.5" y="6" width="17" height="13" rx="2.5"/><path d="M3.5 10.5h17"/><circle cx="16.2" cy="14.6" r="1.3" fill="currentColor" stroke="none"/>'
+  cash: '<rect x="3.5" y="6" width="17" height="13" rx="2.5"/><path d="M3.5 10.5h17"/><circle cx="16.2" cy="14.6" r="1.3" fill="currentColor" stroke="none"/>',
+  img: '<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17l5-4.5 3.5 3 3-2.5 4.5 4"/>',
+  share: '<path d="M12 3.5v11"/><path d="M8 7.5l4-4 4 4"/><path d="M7 10.5H5.5v9h13v-9H17"/>'
 };
 const icon = n => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
 
@@ -863,7 +865,8 @@ function viewCash() {
   return topbar({ title: 'Thu chi', sub: 'Sổ liên tục, lọc theo ngày' }) + `
     <div class="seg">${TC_BOOKS.map(b => `<button class="${b === c.so ? 'on' : ''}" data-act="cb-book" data-val="${b}">${b}</button>`).join('')}</div>
     <div class="fbar"><button class="fbtn ${c.range !== 'all' ? 'on' : ''}" data-act="cb-range-open"><span>Khoảng ngày</span><b>${esc(label)}</b></button>
-      <button class="fbtn ${c.kind !== 'all' ? 'on' : ''}" data-act="cb-kind-open"><span>Loại</span><b>${c.kind === 'all' ? 'Tất cả' : esc(c.kind)}</b></button></div>
+      <button class="fbtn ${c.kind !== 'all' ? 'on' : ''}" data-act="cb-kind-open"><span>Loại</span><b>${c.kind === 'all' ? 'Tất cả' : esc(c.kind)}</b></button>
+      <button class="fbtn xp" data-act="cb-img" aria-label="Xuất ảnh báo cáo">${icon('img')}<b>Ảnh</b></button></div>
     <div class="tcsum${th ? '' : ' two'}">${cells.map(([k, v, cl]) => `<div><span>${k}</span><b class="${cl}">${moneyN(v)}</b></div>`).join('')}
       <div class="end"><span>Tồn cuối</span><b class="${s.end < 0 ? 'neg' : ''}">${moneyN(s.end)}</b></div></div>
     <div class="tcbtn"><button class="btn in" data-act="tc-add" data-val="in">＋ Thu</button><button class="btn out" data-act="tc-add" data-val="out">＋ Chi</button></div>
@@ -886,11 +889,21 @@ function cashList(so, from, to) {
   });
   return html + '</div>';
 }
+// Ô số tiền sổ thu chi = phần nghìn + 3 số cuối (mặc định 000): gõ 6500 là 6.500.000, cần số lẻ thì sửa 000
+function tcAmount(t, inn, typed) {
+  const d = t.value.replace(/\D/g, '');
+  if (inn === 'tc-k') t.value = d ? moneyN(+d.slice(0, 9)) : '';
+  else if (t.dataset.fresh && typed) t.value = typed.replace(/\D/g, '');   // phím đầu tiên sau khi chạm vào thay cả 3 số cũ, con trỏ ở đâu cũng vậy
+  else t.value = d.slice(-3);
+  delete t.dataset.fresh;
+  const k = $('[data-in="tc-k"]').value.replace(/\D/g, ''), r = $('[data-in="tc-r"]').value;
+  state.tmp.tca = (+k || 0) * 1000 + (+r || 0);
+}
 // Bảng thêm / sửa một khoản: số tiền, loại, ngày (tự lấy hôm nay), diễn giải
 function sheetTC() {
   const t = state.tmp, kinds = TC_KINDS[t.so] ? TC_KINDS[t.so][t.dir] : [];
   openSheet(`<h3>${t.id ? 'Sửa' : 'Thêm'} khoản ${t.dir === 'in' ? 'thu' : 'chi'} · ${esc(t.so)}</h3>
-    <label class="lab">Số tiền</label><label class="kfield"><input inputmode="numeric" data-in="tc-amt" value="${t.tca ? moneyN(t.tca) : ''}" placeholder="0" autocomplete="off"><i>₫</i></label>
+    <label class="lab">Số tiền</label><div class="kfield tcamt"><input inputmode="numeric" data-in="tc-k" value="${t.tca >= 1000 ? moneyN(Math.floor(t.tca / 1000)) : ''}" placeholder="0" autocomplete="off"><b>.</b><input inputmode="numeric" data-in="tc-r" value="${String(t.tca % 1000).padStart(3, '0')}" autocomplete="off" aria-label="3 số cuối"><i>₫</i></div>
     <label class="lab">Loại</label><div class="chips wrap">${kinds.map(k => `<button class="chip ${t.kind === k ? 'on' : ''}" data-act="tc-kind" data-val="${k}">${k}</button>`).join('')}</div>
     ${t.kind === 'Tồn đầu' ? '<p class="small-note">Tồn đầu là số tiền đang có khi bắt đầu ghi sổ.</p>' : ''}
     <label class="lab">Ngày</label><input class="field" type="date" data-in="tc-date" value="${t.date}">
@@ -913,6 +926,166 @@ function sheetCbKind() {
   const inRange = state.cash.filter(x => x.so === so && (!from || (x.date && x.date >= from)) && (!to || (x.date && x.date <= to)));
   const opts = ['all', ...TC_KINDS[so].in, ...TC_KINDS[so].out];
   openSheet(`<h3>Loại · ${esc(so)}</h3><div class="opt-grid">${opts.map(k => `<button class="opt ${cur === k ? 'on' : ''}" data-act="cb-kind" data-val="${esc(k)}"><b>${k === 'all' ? 'Tất cả' : k}</b><span>${inRange.filter(x => k === 'all' || x.kind === k).length} khoản</span></button>`).join('')}</div>`);
+}
+
+/* ---------- Ảnh báo cáo thu chi (PNG để lưu hoặc gửi Zalo): vẽ bằng canvas, theo sổ và khoảng ngày đang xem ---------- */
+const RC = { ink: '#3B2630', ink2: '#7E6670', rose: '#C7607A', plum: '#8E3B52', green: '#2F8F5B', red: '#B8323F', line: '#EEDDE2', zebra: '#FBF5F7', band: '#FCEEF2', end: '#FFE9A0' };
+const RSERIF = '"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
+const RSANS = '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif';
+const rnum = n => (n < 0 ? '−' : '') + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+// Mỗi sổ: ô tổng (nhãn, loại hoặc ton/end, màu), cột bảng (nhãn, các loại, màu), phần gom theo diễn giải
+const RBOOK = {
+  'Tiền hàng': { title: 'Thu chi tiền hàng', cols: 3,
+    cells: [['Tồn đầu', 'ton', ''], ['Doanh thu', 'Doanh thu', 'in'], ['Online', 'Online', 'in'], ['Chi khác', 'Chi khác', 'out'], ['Chi hàng', 'Chi hàng', 'out'], ['Tồn cuối', 'end', '']],
+    table: [['Tồn đầu', ['Tồn đầu'], ''], ['Thu', ['Doanh thu', 'Online'], 'in'], ['Chi hàng', ['Chi hàng'], 'out'], ['Chi khác', ['Chi khác'], 'out']],
+    groups: [['Chi hàng theo nơi', 'Chi hàng'], ['Chi khác theo việc', 'Chi khác']] },
+  'Quỹ shop': { title: 'Thu chi quỹ shop', cols: 4,
+    cells: [['Tồn đầu', 'ton', ''], ['Thu', 'Thu', 'in'], ['Chi', 'Chi', 'out'], ['Tồn cuối', 'end', '']],
+    table: [['Tồn đầu', ['Tồn đầu'], ''], ['Thu', ['Thu'], 'in'], ['Chi', ['Chi'], 'out']],
+    groups: [['Chi theo việc', 'Chi']] }
+};
+const rtone = t => t === 'in' ? RC.green : t === 'out' ? RC.red : RC.ink;
+// Đường viền bo góc (tự vẽ để chạy cả trên iPhone đời cũ)
+function rr(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
+// Cắt chữ dài cho vừa ô, thêm dấu …
+function rfit(c, s, w) { if (c.measureText(s).width <= w) return s; while (s && c.measureText(s + '…').width > w) s = s.slice(0, -1); return s + '…'; }
+function rtext(c, s, x, y, font, color, align) { c.font = font; c.fillStyle = color; c.textAlign = align || 'left'; c.fillText(s, x, y); }
+// Gom các khoản cùng diễn giải (không phân biệt hoa thường); quá 7 nhóm thì gộp phần đuôi thành "n mục khác"
+function rgroups(rows, kind) {
+  const m = new Map();
+  rows.filter(x => x.kind === kind).forEach(x => { const name = (x.note || kind).trim(), k = name.toLowerCase(), g = m.get(k) || { name, n: 0, s: 0 }; g.n++; g.s += x.amount; m.set(k, g); });
+  const list = [...m.values()].sort((a, b) => b.s - a.s);
+  if (list.length <= 7) return list;
+  const rest = list.slice(6);
+  return list.slice(0, 6).concat({ name: rest.length + ' mục khác', n: rest.reduce((s, g) => s + g.n, 0), s: rest.reduce((s, g) => s + g.s, 0), muted: true });
+}
+// d = { so, label, ton, end, rows: [{ date, kind, amount, note }], at, logo }
+function drawReport(d) {
+  const B = RBOOK[d.so], W = 540, P = 24, IW = W - 2 * P, ROW = 21;
+  const rows = d.rows.slice().sort((a, b) => a.date - b.date);
+  const sum = k => rows.filter(x => x.kind === k).reduce((s, x) => s + x.amount, 0);
+  const val = k => k === 'ton' ? d.ton : k === 'end' ? d.end : sum(k);
+  const groups = B.groups.map(([title, kind]) => ({ title, list: rgroups(rows, kind) })).filter(g => g.list.length);
+  const sumRows = Math.ceil(B.cells.length / B.cols), cellH = 58, gridH = sumRows * cellH + sumRows - 1;
+  const grpH = groups.length ? 30 + Math.max(...groups.map(g => g.list.length)) * 20 + 10 : 0;
+  const top = 128, H = top + gridH + 36 + grpH + 32 + 24 + rows.length * ROW + 26 + 44;
+  const k = Math.min(2, Math.sqrt(16e6 / (W * H)));                // 2 = nét gấp đôi; iPhone bỏ trắng canvas quá ~16 triệu điểm ảnh nên sổ quá dài thì vẽ nhỏ lại
+  const cv = document.createElement('canvas'); cv.width = Math.floor(W * k); cv.height = Math.floor(H * k);
+  const c = cv.getContext('2d'); c.scale(k, k); c.textBaseline = 'alphabetic';
+  c.fillStyle = '#fff'; c.fillRect(0, 0, W, H);
+
+  // Đầu ảnh: dải hồng, logo tròn, tên sổ, khoảng ngày
+  c.fillStyle = RC.band; c.fillRect(0, 0, W, 108);
+  c.fillStyle = RC.rose; c.fillRect(0, 106, W, 2);
+  if (d.logo) { c.save(); c.beginPath(); c.arc(P + 28, 54, 28, 0, Math.PI * 2); c.clip(); c.drawImage(d.logo, P, 26, 56, 56); c.restore(); }
+  c.beginPath(); c.arc(P + 28, 54, 28, 0, Math.PI * 2); c.strokeStyle = 'rgba(142,59,82,.25)'; c.lineWidth = 1; c.stroke();
+  rtext(c, 'MOON HOUSE', P + 70, 40, `700 11px ${RSANS}`, RC.rose);
+  rtext(c, B.title, P + 70, 68, `600 25px ${RSERIF}`, RC.ink);
+  rtext(c, d.label + ' · ' + rows.length + ' khoản', P + 70, 90, `13px ${RSANS}`, RC.ink2);
+
+  // Ô tổng: giống dòng tổng của tiệm, Tồn cuối tô vàng
+  const cw = (IW - (B.cols - 1)) / B.cols;
+  c.save(); rr(c, P, top, IW, gridH, 12); c.clip(); c.fillStyle = RC.line; c.fillRect(P, top, IW, gridH);
+  B.cells.forEach(([lab, k, t], i) => {
+    const x = P + (i % B.cols) * (cw + 1), y = top + Math.floor(i / B.cols) * (cellH + 1), end = k === 'end';
+    c.fillStyle = end ? RC.end : '#fff'; c.fillRect(x, y, cw, cellH);
+    rtext(c, lab, x + 12, y + 21, `${end ? 700 : 400} 12px ${RSANS}`, end ? RC.ink : RC.ink2);
+    rtext(c, rnum(val(k)), x + 12, y + 46, `${end ? 800 : 600} ${end ? 20 : 18}px ${RSANS}`, end && val(k) < 0 ? RC.red : rtone(t));
+  });
+  c.restore();
+  rr(c, P + .5, top + .5, IW - 1, gridH - 1, 12); c.strokeStyle = RC.line; c.lineWidth = 1; c.stroke();
+  // Phép tính để người nhận tự cộng lại
+  let f = rnum(val('ton'));
+  B.cells.forEach(([, k, t]) => { if (t === 'in') f += ' + ' + rnum(val(k)); if (t === 'out') f += ' − ' + rnum(val(k)); });
+  f += ' = ' + rnum(d.end);
+  let fs = 12; c.font = `${fs}px ${RSANS}`; while (c.measureText(f).width > IW && fs > 9) c.font = `${--fs}px ${RSANS}`;
+  rtext(c, f, P, top + gridH + 22, c.font, RC.ink2);
+
+  // Gom theo diễn giải: chi cho ai, cho việc gì nhiều nhất
+  let y = top + gridH + 36;
+  if (groups.length) {
+    const gw = (IW - 20 * (groups.length - 1)) / groups.length;
+    groups.forEach((g, gi) => {
+      const x = P + gi * (gw + 20);
+      rtext(c, g.title, x, y + 16, `700 13px ${RSANS}`, RC.plum);
+      g.list.forEach((it, i) => {
+        const ry = y + 30 + i * 20;
+        c.font = `13px ${RSANS}`; const amt = rnum(it.s), aw = c.measureText(amt).width;
+        const tail = it.n > 1 && !it.muted ? '  ' + it.n + ' lần' : '';
+        c.font = `${it.muted ? 'italic ' : ''}13px ${RSANS}`;
+        const name = rfit(c, it.name, gw - aw - 14 - (tail ? 40 : 0));
+        rtext(c, name, x, ry + 14, c.font, it.muted ? RC.ink2 : RC.ink);
+        if (tail) rtext(c, tail, x + c.measureText(name).width, ry + 14, `11px ${RSANS}`, RC.ink2);
+        rtext(c, amt, x + gw, ry + 14, `600 13px ${RSANS}`, RC.red, 'right');
+        c.fillStyle = RC.line; c.fillRect(x, ry + 19, gw, 1);
+      });
+    });
+    y += grpH;
+  }
+
+  // Bảng từng khoản: cùng cột với sổ Excel (Tồn đầu, Thu, Chi…), thêm cột Ngày
+  rtext(c, 'Từng khoản', P, y + 18, `700 13px ${RSANS}`, RC.plum);
+  y += 28;
+  const nw = B.table.length === 4 ? 84 : 92, dw = 44, tw = IW - dw - nw * B.table.length;
+  const colX = B.table.map((_, i) => P + dw + tw + nw * (i + 1) - 6);
+  c.fillStyle = RC.plum; rr(c, P, y, IW, 24, 6); c.fill();
+  rtext(c, 'Ngày', P + 6, y + 16, `700 11.5px ${RSANS}`, '#fff');
+  rtext(c, 'Diễn giải', P + dw, y + 16, `700 11.5px ${RSANS}`, '#fff');
+  B.table.forEach(([lab], i) => rtext(c, lab, colX[i], y + 16, `700 11.5px ${RSANS}`, '#fff', 'right'));
+  y += 24;
+  let lastDay = '';
+  rows.forEach((x, i) => {
+    const ry = y + i * ROW, day = x.date.getDate() + '/' + (x.date.getMonth() + 1);
+    if (i % 2) { c.fillStyle = RC.zebra; c.fillRect(P, ry, IW, ROW); }
+    if (day !== lastDay) { rtext(c, day, P + 6, ry + 15, `11.5px ${RSANS}`, RC.ink2); if (i) { c.fillStyle = RC.line; c.fillRect(P, ry, IW, 1); } lastDay = day; }
+    c.font = `12.5px ${RSANS}`;
+    rtext(c, rfit(c, x.note || x.kind, tw - 8), P + dw, ry + 15, c.font, x.note ? RC.ink : RC.ink2);
+    const ci = B.table.findIndex(([, ks]) => ks.includes(x.kind));
+    if (ci >= 0) rtext(c, rnum(x.amount), colX[ci], ry + 15, `12.5px ${RSANS}`, rtone(B.table[ci][2]), 'right');
+  });
+  y += rows.length * ROW;
+  // Dòng cộng: giống dòng cộng cuối bảng Excel
+  c.fillStyle = RC.plum; c.fillRect(P, y, IW, 1.5);
+  rtext(c, 'Cộng', P + dw, y + 17, `700 12.5px ${RSANS}`, RC.ink);
+  B.table.forEach(([, ks, t], i) => rtext(c, rnum(ks.reduce((s, k) => s + sum(k), 0)), colX[i], y + 17, `700 12.5px ${RSANS}`, rtone(t), 'right'));
+  y += 26;
+
+  rtext(c, 'Moon House · xuất từ app lúc ' + d.at, W / 2, y + 26, `11px ${RSANS}`, RC.ink2, 'center');
+  return cv;
+}
+const dmy = d => dm(d) + '/' + d.getFullYear();
+// Logo tiệm ở đầu ảnh: lấy biểu tượng app (đã nằm sẵn trong máy), tải một lần
+let reportLogo = null;
+const loadLogo = () => reportLogo || (reportLogo = new Promise(ok => { const im = new Image(); im.onload = () => ok(im); im.onerror = () => ok(null); im.src = 'icons/icon-192.png'; }));
+// Vẽ ảnh của sổ đang xem trong khoảng ngày đang chọn (không theo bộ lọc Loại), rồi mở bảng xem trước
+async function sheetCbImg() {
+  const so = state.cb.so, [from, to] = rangeOf(state.cb.range);
+  const all = state.cash.filter(x => x.so === so && x.date && TC_SIGN[x.kind]);
+  if (!all.length) { toast('Sổ ' + so + ' chưa có khoản nào'); return; }
+  const rows = all.filter(x => (!from || x.date >= from) && (!to || x.date <= to)), s = cbSum(so, from, to);
+  const f = from || all.reduce((m, x) => x.date < m ? x.date : m, all[0].date), t = to || TODAY;
+  const label = sameDay(f, t) ? dmy(f) : dm(f) + ' → ' + dmy(t), now = new Date();
+  const at = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ' · ' + dmy(now);
+  const cv = drawReport({ so, label, ton: s.ton, end: s.end, rows, at, logo: await loadLogo() });
+  const blob = await new Promise(ok => cv.toBlob(ok, 'image/png'));
+  if (!blob) { toast('Không tạo được ảnh, thử chọn khoảng ngày ngắn hơn'); return; }
+  const name = 'MoonHouse_' + (so === 'Tiền hàng' ? 'TienHang' : 'QuyShop') + '_' + f.getDate() + '-' + (f.getMonth() + 1) + '_' + t.getDate() + '-' + (t.getMonth() + 1) + '-' + t.getFullYear() + '.png';
+  if (state.tmp && state.tmp.imgUrl) URL.revokeObjectURL(state.tmp.imgUrl);
+  state.tmp = { imgFile: new File([blob], name, { type: 'image/png' }), imgUrl: URL.createObjectURL(blob) };
+  openSheet(`<h3>Ảnh báo cáo · ${esc(so)}</h3><p class="ssub">${label} · ${rows.length} khoản</p>
+    <div class="prev"><img src="${state.tmp.imgUrl}" alt="Xem trước ảnh báo cáo sổ ${esc(so)}"></div>
+    <button class="btn" style="margin-top:14px" data-act="cb-img-share">${icon('share')}Lưu hoặc gửi ảnh</button>
+    <p class="hint">Mở bảng chia sẻ của iPhone: Lưu hình ảnh, Zalo, Messenger…</p>`);
+}
+// Lưu hoặc gửi: máy có bảng chia sẻ (iPhone) thì mở bảng đó, không có thì tải file ảnh về
+function shareCbImg() {
+  const t = state.tmp, f = t && t.imgFile;
+  if (!f) return;
+  if (navigator.canShare && navigator.canShare({ files: [f] })) {
+    navigator.share({ files: [f] }).catch(err => { if (err.name !== 'AbortError') toast('Không mở được bảng chia sẻ: ' + err.message); });   // bấm Huỷ thì thôi
+    return;
+  }
+  const a = document.createElement('a'); a.href = t.imgUrl; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
 }
 
 /* =====================================================================
@@ -1516,6 +1689,8 @@ document.addEventListener('click', async e => {
         if (c.from > c.to) { toast('Từ ngày phải trước đến ngày'); break; }
         c.range = 'custom'; closeSheet(); render(true); break; }
       case 'cb-kind-open': sheetCbKind(); break;
+      case 'cb-img': await sheetCbImg(); break;
+      case 'cb-img-share': shareCbImg(); break;                       // gọi ngay trong lúc chạm: iPhone chỉ mở bảng chia sẻ khi đó
       case 'cb-kind': state.cb.kind = val; closeSheet(); render(true); break;
       case 'tc-add': { const so = state.cb.so; state.tmp = { id: null, so, dir: val, kind: TC_KINDS[so][val][0], tca: 0, date: toIso(TODAY), note: '' }; sheetTC(); break; }
       case 'tc-edit': { const x = state.cash.find(c => c.id === id);
@@ -1607,6 +1782,10 @@ document.addEventListener('click', async e => {
   }
 });
 
+// Chạm vào 3 số cuối của ô tiền thu chi thì chọn sẵn cả 3 để gõ đè; rời ô thì bù số 0 cho đủ 3 số
+document.addEventListener('focusin', e => { const t = e.target; if (t.dataset.in === 'tc-r') { t.dataset.fresh = '1'; setTimeout(() => t.setSelectionRange(0, t.value.length), 0); } });
+document.addEventListener('focusout', e => { const t = e.target; if (t.dataset.in === 'tc-r') t.value = (t.value || '0').padStart(3, '0'); });
+
 // Gõ vào các ô: tiền theo nghìn, tìm kiếm, ghi chú, cài đặt
 document.addEventListener('input', e => {
   const t = e.target, inn = t.dataset.in;
@@ -1615,7 +1794,7 @@ document.addEventListener('input', e => {
   else if (t.id === 'cust-search') { state.filter.cq = t.value; renderCustomerList(); }
   else if (t.id === 'stock-q') { state.sfilter.q = t.value; renderStockGrid(); }
   else if (t.id === 'log-q') { state.lfilter.q = t.value; renderLogList(); }
-  else if (inn === 'tc-amt') { const d = t.value.replace(/\D/g, '').slice(0, 12); t.value = d ? moneyN(+d) : ''; state.tmp.tca = +d || 0; }   // gõ đủ số đồng, tự thêm dấu chấm
+  else if (inn === 'tc-k' || inn === 'tc-r') tcAmount(t, inn, e.data);
   else if (inn === 'tc-date') state.tmp.date = t.value;
   else if (inn === 'tc-note') state.tmp.note = t.value;
   else if (inn === 'cb-from') state.cb.from = t.value;
