@@ -39,7 +39,7 @@ const thumb = (id, w) => `https://drive.google.com/thumbnail?id=${id}&sz=w${w ||
 const hhmm = iso => { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 
 /* ---------- Hằng ---------- */
-const APP_VERSION = '1.8';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
+const APP_VERSION = '1.8.1';           // tăng cùng CACHE trong sw.js mỗi lần sửa app
 const SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Số đo'];
 const STATUS = ['Đặt', 'Đã về', 'Đã giao'];
 const ORDER_STATUS = ['Đang đặt', 'Đã về đủ', 'Đã giao'];
@@ -929,7 +929,7 @@ function sheetCbKind() {
 }
 
 /* ---------- Ảnh báo cáo thu chi (PNG để lưu hoặc gửi Zalo): vẽ bằng canvas, theo sổ và khoảng ngày đang xem ---------- */
-const RC = { ink: '#3B2630', ink2: '#7E6670', rose: '#C7607A', plum: '#8E3B52', green: '#2F8F5B', red: '#B8323F', line: '#EEDDE2', zebra: '#FBF5F7', band: '#FCEEF2', end: '#FFE9A0' };
+const RC = { ink: '#3B2630', ink2: '#7E6670', rose: '#C7607A', plum: '#8E3B52', green: '#2F8F5B', red: '#B8323F', line: '#EEDDE2', grid: '#E2CBD2', zebra: '#FBF5F7', band: '#FCEEF2', end: '#FFE9A0' };
 const RSERIF = '"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif';
 const RSANS = '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif';
 const rnum = n => (n < 0 ? '−' : '') + String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
@@ -1026,7 +1026,7 @@ function drawReport(d) {
   // Bảng từng khoản: cùng cột với sổ Excel (Tồn đầu, Thu, Chi…), thêm cột Ngày
   rtext(c, 'Từng khoản', P, y + 18, `700 13px ${RSANS}`, RC.plum);
   y += 28;
-  const nw = B.table.length === 4 ? 84 : 92, dw = 44, tw = IW - dw - nw * B.table.length;
+  const ty = y, nw = B.table.length === 4 ? 84 : 92, dw = 44, tw = IW - dw - nw * B.table.length;
   const colX = B.table.map((_, i) => P + dw + tw + nw * (i + 1) - 6);
   c.fillStyle = RC.plum; rr(c, P, y, IW, 24, 6); c.fill();
   rtext(c, 'Ngày', P + 6, y + 16, `700 11.5px ${RSANS}`, '#fff');
@@ -1048,6 +1048,10 @@ function drawReport(d) {
   c.fillStyle = RC.plum; c.fillRect(P, y, IW, 1.5);
   rtext(c, 'Cộng', P + dw, y + 17, `700 12.5px ${RSANS}`, RC.ink);
   B.table.forEach(([, ks, t], i) => rtext(c, rnum(ks.reduce((s, k) => s + sum(k), 0)), colX[i], y + 17, `700 12.5px ${RSANS}`, rtone(t), 'right'));
+  // Kẻ dọc phân tách cột và viền hai bên như bảng Excel; vẽ sau cùng để nền sọc không che mất
+  const xs = [P + dw - 5, P + dw + tw].concat(B.table.slice(1).map((_, i) => P + dw + tw + nw * (i + 1)));
+  c.fillStyle = 'rgba(255,255,255,.35)'; xs.forEach(x => c.fillRect(x, ty + 4, 1, 16));
+  c.fillStyle = RC.grid; xs.concat(P, P + IW - 1).forEach(x => c.fillRect(x, ty + 24, 1, y + 24 - ty - 24)); c.fillRect(P, y + 24, IW, 1);
   y += 26;
 
   rtext(c, 'Moon House · xuất từ app lúc ' + d.at, W / 2, y + 26, `11px ${RSANS}`, RC.ink2, 'center');
